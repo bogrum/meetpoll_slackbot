@@ -1,0 +1,25 @@
+[Unit]
+Description=MeetPoll Slack Bot
+After=network.target
+
+[Service]
+Type=simple
+User=raspbog
+Group=raspbog
+WorkingDirectory=/home/raspbog/slackbot/slackbot
+Environment=PATH=/home/raspbog/slackbot/slackbot/venv/bin:/usr/bin
+ExecStart=/home/raspbog/slackbot/slackbot/venv/bin/python bot.py
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meetpoll
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
