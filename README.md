@@ -258,6 +258,7 @@ ONBOARD_AFTER_DATE=
 | `SLACK_INVITE_LINK` | Workspace invite link (get it from Slack: workspace menu > Invite people) |
 | `WELCOME_METHOD` | `email` (send email only), `slack_dm` (DM only), or `both` |
 | `ONBOARD_AFTER_DATE` | Optional cutoff date (e.g., `2026-02-01`). Entries before this date are ignored. Leave empty to process all. |
+| `ONBOARD_SUPER_ADMIN` | Your Slack Member ID (get it from your Slack profile > "..." > Copy member ID). This user can manage onboard admins and cannot be removed. |
 
 ### Raspberry Pi Deployment
 
@@ -412,6 +413,8 @@ RSVP buttons appear on the event message: **Going**, **Maybe**, **Not Going**. I
 
 ### Onboarding Management
 
+> **Access Control:** `/onboard` commands are restricted to authorized admins only. Set `ONBOARD_SUPER_ADMIN` in `.env` with your Slack Member ID, then use `/onboard admin add @user` to grant access to others.
+
 | Command | Description |
 |---|---|
 | `/onboard status` | Show onboarding statistics |
@@ -420,6 +423,11 @@ RSVP buttons appear on the event message: **Going**, **Maybe**, **Not Going**. I
 | `/onboard unmap "Committee"` | Remove a mapping |
 | `/onboard run` | Manually check Google Sheet for new registrations |
 | `/onboard seed` | Import all existing entries as already-onboarded (first-run safety) |
+| `/onboard resend-since 2025-11-01` | Re-send welcome emails to seeded members registered after a date |
+| `/onboard user@example.com` | Send a welcome email to a specific address |
+| `/onboard admin list` | Show all onboard admins |
+| `/onboard admin add @user` | Add an onboard admin (super admin only) |
+| `/onboard admin remove @user` | Remove an onboard admin (super admin only) |
 
 ### Automatic Background Jobs
 
