@@ -1,6 +1,6 @@
 """
 SQLite database module for MeetPoll bot.
-Handles all poll, option, and vote storage operations.
+Handles poll, option, vote, event, RSVP, and onboarding storage operations.
 """
 
 import sqlite3
@@ -77,11 +77,88 @@ def init_db():
             )
         """)
 
+        # Processed members table (onboarding)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS processed_members (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                first_name TEXT,
+                last_name TEXT,
+                country TEXT,
+                education TEXT,
+                affiliations TEXT,
+                membership_choice TEXT,
+                committees TEXT,
+                email_sent INTEGER DEFAULT 0,
+                slack_user_id TEXT,
+                channels_assigned INTEGER DEFAULT 0,
+                dm_sent INTEGER DEFAULT 0,
+                onboarded INTEGER DEFAULT 0,
+                sheet_timestamp TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Committee channels mapping
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS committee_channels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                committee_name TEXT UNIQUE NOT NULL,
+                channel_id TEXT NOT NULL
+            )
+        """)
+
+        # Onboard settings (key-value store)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS onboard_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+
+        # Events table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                description TEXT,
+                location TEXT,
+                event_datetime TIMESTAMP NOT NULL,
+                max_attendees INTEGER,
+                creator_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                message_ts TEXT,
+                status TEXT DEFAULT 'open' CHECK(status IN ('open', 'closed', 'cancelled')),
+                reminder_24h_sent INTEGER DEFAULT 0,
+                reminder_1h_sent INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # RSVPs table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS rsvps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id INTEGER NOT NULL,
+                user_id TEXT NOT NULL,
+                response TEXT NOT NULL CHECK(response IN ('going', 'maybe', 'not_going')),
+                responded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
+                UNIQUE(event_id, user_id)
+            )
+        """)
+
         # Indexes for faster lookups
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_options_poll ON options(poll_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_votes_poll ON votes(poll_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_votes_user ON votes(user_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_polls_status ON polls(status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_processed_members_email ON processed_members(email)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_processed_members_slack ON processed_members(slack_user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_status ON events(status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_datetime ON events(event_datetime)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_rsvps_event ON rsvps(event_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_rsvps_user ON rsvps(user_id)")
 
 
 def create_poll(question: str, creator_id: str, channel_id: str,
@@ -248,3 +325,361 @@ def get_total_voters(poll_id: int) -> int:
         """, (poll_id,))
         row = cursor.fetchone()
         return row["count"] if row else 0
+
+
+# ============================================================================
+# ONBOARDING FUNCTIONS
+# ============================================================================
+
+def is_member_processed(email: str) -> bool:
+    """Check if a member email has already been processed."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM processed_members WHERE email = ?", (email.lower(),))
+        return cursor.fetchone() is not None
+
+
+def add_processed_member(data: dict) -> bool:
+    """Add a new processed member. Returns True if inserted, False if already exists."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO processed_members
+                    (email, first_name, last_name, country, education,
+                     affiliations, membership_choice, committees,
+                     email_sent, onboarded, sheet_timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                data.get("email", "").lower(),
+                data.get("first_name"),
+                data.get("last_name"),
+                data.get("country"),
+                data.get("education"),
+                data.get("affiliations"),
+                data.get("membership_choice"),
+                data.get("committees"),
+                data.get("email_sent", 0),
+                data.get("onboarded", 0),
+                data.get("sheet_timestamp"),
+            ))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def get_member_by_email(email: str) -> Optional[dict]:
+    """Get a processed member by email."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM processed_members WHERE email = ?", (email.lower(),))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def get_member_by_slack_user(slack_user_id: str) -> Optional[dict]:
+    """Get a processed member by Slack user ID."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM processed_members WHERE slack_user_id = ?", (slack_user_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def mark_email_sent(email: str):
+    """Mark that a welcome email was sent to this member."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE processed_members SET email_sent = 1 WHERE email = ?", (email.lower(),))
+
+
+def mark_dm_sent(email: str):
+    """Mark that a welcome DM was sent to this member."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE processed_members SET dm_sent = 1 WHERE email = ?", (email.lower(),))
+
+
+def mark_channels_assigned(email: str):
+    """Mark that committee channels were assigned to this member."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE processed_members SET channels_assigned = 1 WHERE email = ?", (email.lower(),))
+
+
+def mark_onboarded(email: str):
+    """Mark a member as fully onboarded."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE processed_members SET onboarded = 1 WHERE email = ?", (email.lower(),))
+
+
+def set_member_slack_user(email: str, slack_user_id: str):
+    """Associate a Slack user ID with a processed member."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE processed_members SET slack_user_id = ? WHERE email = ?",
+            (slack_user_id, email.lower())
+        )
+
+
+def set_committee_channel(committee_name: str, channel_id: str):
+    """Set or update a committee→channel mapping."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO committee_channels (committee_name, channel_id)
+            VALUES (?, ?)
+            ON CONFLICT(committee_name) DO UPDATE SET channel_id = ?
+        """, (committee_name, channel_id, channel_id))
+
+
+def get_committee_channel(committee_name: str) -> Optional[str]:
+    """Get the channel ID for a committee name."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT channel_id FROM committee_channels WHERE committee_name = ?",
+            (committee_name,)
+        )
+        row = cursor.fetchone()
+        return row["channel_id"] if row else None
+
+
+def get_all_committee_channels() -> list[dict]:
+    """Get all committee→channel mappings."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM committee_channels ORDER BY committee_name")
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def delete_committee_channel(committee_name: str) -> bool:
+    """Delete a committee→channel mapping. Returns True if deleted."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM committee_channels WHERE committee_name = ?", (committee_name,))
+        return cursor.rowcount > 0
+
+
+def get_setting(key: str) -> Optional[str]:
+    """Get an onboard setting value."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM onboard_settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        return row["value"] if row else None
+
+
+def set_setting(key: str, value: str):
+    """Set an onboard setting value."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO onboard_settings (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = ?
+        """, (key, value, value))
+
+
+def get_onboarding_stats() -> dict:
+    """Get onboarding statistics."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total,
+                SUM(email_sent) as emails_sent,
+                SUM(CASE WHEN slack_user_id IS NOT NULL THEN 1 ELSE 0 END) as joined_slack,
+                SUM(channels_assigned) as channels_assigned,
+                SUM(dm_sent) as dms_sent,
+                SUM(onboarded) as fully_onboarded
+            FROM processed_members
+        """)
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+
+
+def get_pending_email_members() -> list[dict]:
+    """Get members who need welcome emails (not yet sent, not pre-seeded as onboarded)."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM processed_members
+            WHERE email_sent = 0 AND onboarded = 0
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+
+# ============================================================================
+# EVENT FUNCTIONS
+# ============================================================================
+
+def create_event(title: str, description: str, location: str,
+                 event_datetime: str, max_attendees: Optional[int],
+                 creator_id: str, channel_id: str) -> int:
+    """Create a new event. Returns the event ID."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO events (title, description, location, event_datetime,
+                                max_attendees, creator_id, channel_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (title, description, location, event_datetime,
+              max_attendees, creator_id, channel_id))
+        return cursor.lastrowid
+
+
+def get_event(event_id: int) -> Optional[dict]:
+    """Get event details by ID."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM events WHERE id = ?", (event_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def update_event_message_ts(event_id: int, message_ts: str):
+    """Store the Slack message timestamp for an event."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE events SET message_ts = ? WHERE id = ?",
+            (message_ts, event_id)
+        )
+
+
+def set_rsvp(event_id: int, user_id: str, response: str):
+    """Set or update a user's RSVP for an event."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO rsvps (event_id, user_id, response)
+            VALUES (?, ?, ?)
+            ON CONFLICT(event_id, user_id) DO UPDATE SET
+                response = ?, responded_at = CURRENT_TIMESTAMP
+        """, (event_id, user_id, response, response))
+
+
+def get_event_rsvps(event_id: int) -> list[dict]:
+    """Get all RSVPs for an event."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM rsvps WHERE event_id = ?
+            ORDER BY responded_at
+        """, (event_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_rsvp_counts(event_id: int) -> dict:
+    """Get RSVP counts by response type."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT response, COUNT(*) as count
+            FROM rsvps WHERE event_id = ?
+            GROUP BY response
+        """, (event_id,))
+        counts = {"going": 0, "maybe": 0, "not_going": 0}
+        for row in cursor.fetchall():
+            counts[row["response"]] = row["count"]
+        return counts
+
+
+def get_user_rsvp(event_id: int, user_id: str) -> Optional[str]:
+    """Get a user's RSVP response for an event."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT response FROM rsvps WHERE event_id = ? AND user_id = ?",
+            (event_id, user_id)
+        )
+        row = cursor.fetchone()
+        return row["response"] if row else None
+
+
+def get_rsvp_users(event_id: int, response: str) -> list[str]:
+    """Get user IDs for a specific RSVP response."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT user_id FROM rsvps WHERE event_id = ? AND response = ?",
+            (event_id, response)
+        )
+        return [row["user_id"] for row in cursor.fetchall()]
+
+
+def close_event(event_id: int) -> bool:
+    """Close an event. Returns True if successful."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE events SET status = 'closed' WHERE id = ? AND status = 'open'",
+            (event_id,)
+        )
+        return cursor.rowcount > 0
+
+
+def cancel_event(event_id: int) -> bool:
+    """Cancel an event. Returns True if successful."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE events SET status = 'cancelled' WHERE id = ? AND status = 'open'",
+            (event_id,)
+        )
+        return cursor.rowcount > 0
+
+
+def get_upcoming_events_for_reminders() -> list[dict]:
+    """Get open events that need reminders sent."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM events
+            WHERE status = 'open'
+            AND (
+                (reminder_24h_sent = 0 AND event_datetime <= datetime('now', '+24 hours')
+                    AND event_datetime > datetime('now'))
+                OR
+                (reminder_1h_sent = 0 AND event_datetime <= datetime('now', '+1 hour')
+                    AND event_datetime > datetime('now'))
+            )
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def mark_reminder_sent(event_id: int, reminder_type: str):
+    """Mark a reminder as sent. reminder_type is '24h' or '1h'."""
+    col = "reminder_24h_sent" if reminder_type == "24h" else "reminder_1h_sent"
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(f"UPDATE events SET {col} = 1 WHERE id = ?", (event_id,))
+
+
+def get_past_open_events() -> list[dict]:
+    """Get open events whose datetime has passed."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM events
+            WHERE status = 'open'
+            AND event_datetime <= datetime('now')
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_upcoming_events(limit: int = 10) -> list[dict]:
+    """Get upcoming open events."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM events
+            WHERE status = 'open'
+            AND event_datetime > datetime('now')
+            ORDER BY event_datetime ASC
+            LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cursor.fetchall()]
