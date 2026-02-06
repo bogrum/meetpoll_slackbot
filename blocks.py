@@ -1,6 +1,6 @@
 """
 Block Kit UI builders for MeetPoll bot.
-Creates interactive Slack message components.
+Creates interactive Slack message components for polls, events, and onboarding.
 """
 
 from datetime import datetime
@@ -340,3 +340,385 @@ def build_error_message(error: str) -> list[dict]:
             }
         }
     ]
+
+
+# ============================================================================
+# ONBOARDING BLOCK BUILDERS
+# ============================================================================
+
+def build_welcome_dm_blocks(first_name: str, committees: list[str]) -> list[dict]:
+    """Build Slack DM welcome message blocks for a new member."""
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": ":wave: Welcome to NY-RSG Turkiye!", "emoji": True}
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"Hi {first_name}! Welcome to our Slack workspace. We're glad you're here!"
+            }
+        },
+        {"type": "divider"},
+    ]
+
+    if committees:
+        committee_list = "\n".join([f"  - {c}" for c in committees])
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f":clipboard: *Your committees:*\n{committee_list}\n\nYou've been automatically added to the corresponding channels."
+            }
+        })
+    else:
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "Feel free to explore the channels and join any that interest you!"
+            }
+        })
+
+    blocks.append({
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": "If you have any questions, don't hesitate to ask. Enjoy!"
+        }
+    })
+
+    return blocks
+
+
+def build_onboard_status_message(stats: dict) -> list[dict]:
+    """Build the /onboard status response."""
+    total = stats.get("total", 0)
+    emails_sent = stats.get("emails_sent", 0)
+    joined = stats.get("joined_slack", 0)
+    assigned = stats.get("channels_assigned", 0)
+    dms = stats.get("dms_sent", 0)
+    onboarded = stats.get("fully_onboarded", 0)
+
+    return [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": ":clipboard: Onboarding Status", "emoji": True}
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*Total processed:* {total}\n"
+                    f"*Emails sent:* {emails_sent}\n"
+                    f"*Joined Slack:* {joined}\n"
+                    f"*Channels assigned:* {assigned}\n"
+                    f"*DMs sent:* {dms}\n"
+                    f"*Fully onboarded:* {onboarded}"
+                )
+            }
+        }
+    ]
+
+
+def build_onboard_mapping_list(mappings: list[dict]) -> list[dict]:
+    """Build the /onboard list response showing committee→channel mappings."""
+    if not mappings:
+        return [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "No committee→channel mappings configured yet.\nUse `/onboard map \"Committee Name\" #channel` to add one."
+                }
+            }
+        ]
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": ":link: Committee Channel Mappings", "emoji": True}
+        }
+    ]
+
+    lines = []
+    for m in mappings:
+        lines.append(f"  *{m['committee_name']}* → <#{m['channel_id']}>")
+
+    blocks.append({
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": "\n".join(lines)}
+    })
+
+    return blocks
+
+
+# ============================================================================
+# EVENT BLOCK BUILDERS
+# ============================================================================
+
+def build_event_modal() -> dict:
+    """Build the modal for creating a new event."""
+    return {
+        "type": "modal",
+        "callback_id": "create_event_modal",
+        "title": {"type": "plain_text", "text": "Create Event"},
+        "submit": {"type": "plain_text", "text": "Create Event"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "event_title_block",
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "event_title_input",
+                    "placeholder": {"type": "plain_text", "text": "e.g., Monthly Team Meetup"},
+                    "max_length": 150
+                },
+                "label": {"type": "plain_text", "text": "Event Title"}
+            },
+            {
+                "type": "input",
+                "block_id": "event_description_block",
+                "optional": True,
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "event_description_input",
+                    "multiline": True,
+                    "placeholder": {"type": "plain_text", "text": "Describe the event..."}
+                },
+                "label": {"type": "plain_text", "text": "Description"}
+            },
+            {
+                "type": "input",
+                "block_id": "event_date_block",
+                "element": {
+                    "type": "datepicker",
+                    "action_id": "event_date_input",
+                    "placeholder": {"type": "plain_text", "text": "Select date"}
+                },
+                "label": {"type": "plain_text", "text": "Event Date"}
+            },
+            {
+                "type": "input",
+                "block_id": "event_time_block",
+                "element": {
+                    "type": "timepicker",
+                    "action_id": "event_time_input",
+                    "placeholder": {"type": "plain_text", "text": "Select time"}
+                },
+                "label": {"type": "plain_text", "text": "Event Time"}
+            },
+            {
+                "type": "input",
+                "block_id": "event_location_block",
+                "optional": True,
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "event_location_input",
+                    "placeholder": {"type": "plain_text", "text": "e.g., Zoom link or office address"}
+                },
+                "label": {"type": "plain_text", "text": "Location"}
+            },
+            {
+                "type": "input",
+                "block_id": "event_max_block",
+                "optional": True,
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "event_max_input",
+                    "placeholder": {"type": "plain_text", "text": "Leave empty for unlimited"}
+                },
+                "label": {"type": "plain_text", "text": "Max Attendees (optional)"},
+                "hint": {"type": "plain_text", "text": "Enter a number or leave empty for no limit."}
+            }
+        ]
+    }
+
+
+def build_event_message(event_id: int, title: str, description: str,
+                         location: str, event_datetime: str,
+                         creator_id: str, rsvp_counts: dict,
+                         going_users: list[str], maybe_users: list[str],
+                         not_going_users: list[str],
+                         max_attendees: Optional[int] = None,
+                         status: str = "open") -> list[dict]:
+    """Build the event message with RSVP buttons."""
+    blocks = []
+
+    # Header
+    blocks.append({
+        "type": "header",
+        "text": {"type": "plain_text", "text": f":calendar: {title}", "emoji": True}
+    })
+
+    # Event details context
+    context_parts = [{"type": "mrkdwn", "text": f"Created by <@{creator_id}>"}]
+
+    if event_datetime:
+        try:
+            dt = datetime.fromisoformat(event_datetime)
+            dt_str = dt.strftime("%b %d, %Y at %I:%M %p")
+        except (ValueError, TypeError):
+            dt_str = str(event_datetime)
+        context_parts.append({"type": "mrkdwn", "text": f":clock3: {dt_str}"})
+
+    if location:
+        context_parts.append({"type": "mrkdwn", "text": f":round_pushpin: {location}"})
+
+    if status != "open":
+        context_parts.append({"type": "mrkdwn", "text": f":lock: *Event {status.title()}*"})
+
+    blocks.append({"type": "context", "elements": context_parts})
+
+    if description:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": description}})
+
+    blocks.append({"type": "divider"})
+
+    # RSVP counts
+    going_count = rsvp_counts.get("going", 0)
+    maybe_count = rsvp_counts.get("maybe", 0)
+    not_going_count = rsvp_counts.get("not_going", 0)
+
+    capacity_text = ""
+    if max_attendees:
+        capacity_text = f" / {max_attendees}"
+    is_full = max_attendees and going_count >= max_attendees
+
+    # RSVP summary section
+    going_text = f":white_check_mark: *Going ({going_count}{capacity_text})*"
+    if is_full:
+        going_text += " (FULL)"
+    if going_users:
+        going_text += "\n" + ", ".join([f"<@{u}>" for u in going_users])
+
+    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": going_text}})
+
+    maybe_text = f":thinking_face: *Maybe ({maybe_count})*"
+    if maybe_users:
+        maybe_text += "\n" + ", ".join([f"<@{u}>" for u in maybe_users])
+
+    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": maybe_text}})
+
+    not_going_text = f":x: *Not Going ({not_going_count})*"
+    if not_going_users:
+        not_going_text += "\n" + ", ".join([f"<@{u}>" for u in not_going_users])
+
+    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": not_going_text}})
+
+    # RSVP buttons (only for open events)
+    if status == "open":
+        blocks.append({"type": "divider"})
+
+        going_button_text = ":white_check_mark: Going"
+        if is_full:
+            going_button_text = ":white_check_mark: Going (FULL)"
+
+        blocks.append({
+            "type": "actions",
+            "block_id": f"event_rsvp_{event_id}",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": going_button_text, "emoji": True},
+                    "action_id": f"rsvp_going_{event_id}",
+                    "value": str(event_id),
+                    "style": "primary"
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": ":thinking_face: Maybe", "emoji": True},
+                    "action_id": f"rsvp_maybe_{event_id}",
+                    "value": str(event_id)
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": ":x: Not Going", "emoji": True},
+                    "action_id": f"rsvp_not_going_{event_id}",
+                    "value": str(event_id),
+                    "style": "danger"
+                }
+            ]
+        })
+
+    # Footer
+    blocks.append({
+        "type": "context",
+        "elements": [
+            {"type": "mrkdwn", "text": f"Event ID: {event_id} | Use `/event create` to create a new event"}
+        ]
+    })
+
+    return blocks
+
+
+def build_event_reminder_blocks(event_id: int, title: str,
+                                 event_datetime: str, location: str,
+                                 rsvp_counts: dict,
+                                 reminder_type: str) -> list[dict]:
+    """Build event reminder message blocks."""
+    if reminder_type == "24h":
+        time_text = "in 24 hours"
+    else:
+        time_text = "in 1 hour"
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f":bell: Event Reminder", "emoji": True}
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*{title}* is starting {time_text}!"
+            }
+        }
+    ]
+
+    details = []
+    if event_datetime:
+        try:
+            dt = datetime.fromisoformat(event_datetime)
+            details.append(f":clock3: {dt.strftime('%b %d, %Y at %I:%M %p')}")
+        except (ValueError, TypeError):
+            details.append(f":clock3: {event_datetime}")
+    if location:
+        details.append(f":round_pushpin: {location}")
+
+    going = rsvp_counts.get("going", 0)
+    maybe = rsvp_counts.get("maybe", 0)
+    details.append(f":white_check_mark: {going} going | :thinking_face: {maybe} maybe")
+
+    blocks.append({
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": " | ".join(details)}]
+    })
+
+    return blocks
+
+
+def build_event_closed_message(event_id: int, title: str, description: str,
+                                location: str, event_datetime: str,
+                                creator_id: str, rsvp_counts: dict,
+                                going_users: list[str], maybe_users: list[str],
+                                not_going_users: list[str],
+                                max_attendees: Optional[int] = None) -> list[dict]:
+    """Build the final summary message for a closed/past event."""
+    return build_event_message(
+        event_id=event_id,
+        title=title,
+        description=description,
+        location=location,
+        event_datetime=event_datetime,
+        creator_id=creator_id,
+        rsvp_counts=rsvp_counts,
+        going_users=going_users,
+        maybe_users=maybe_users,
+        not_going_users=not_going_users,
+        max_attendees=max_attendees,
+        status="closed"
+    )
