@@ -148,6 +148,14 @@ def init_db():
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS onboard_admins (
+                user_id TEXT PRIMARY KEY,
+                added_by TEXT NOT NULL,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Indexes for faster lookups
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_options_poll ON options(poll_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_votes_poll ON votes(poll_id)")
@@ -501,6 +509,38 @@ def get_onboarding_stats() -> dict:
         return dict(row) if row else {}
 
 
+def unseed_members_since(cutoff_date: datetime) -> int:
+    """Reset email_sent and onboarded flags for seeded members registered after a date.
+    Returns the number of members affected."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        # Get all seeded members (onboarded=1, no slack user yet)
+        cursor.execute("""
+            SELECT email, sheet_timestamp FROM processed_members
+            WHERE onboarded = 1 AND email_sent = 1 AND slack_user_id IS NULL
+        """)
+        count = 0
+        for row in cursor.fetchall():
+            ts = row["sheet_timestamp"]
+            if not ts:
+                continue
+            try:
+                member_date = datetime.strptime(ts.split(".")[0], "%m/%d/%Y %H:%M:%S")
+            except ValueError:
+                try:
+                    member_date = datetime.strptime(ts.split(".")[0], "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    continue
+            if member_date >= cutoff_date:
+                cursor.execute("""
+                    UPDATE processed_members
+                    SET email_sent = 0, onboarded = 0
+                    WHERE email = ?
+                """, (row["email"],))
+                count += 1
+        return count
+
+
 def get_pending_email_members() -> list[dict]:
     """Get members who need welcome emails (not yet sent, not pre-seeded as onboarded)."""
     with get_db() as conn:
@@ -510,6 +550,48 @@ def get_pending_email_members() -> list[dict]:
             WHERE email_sent = 0 AND onboarded = 0
         """)
         return [dict(row) for row in cursor.fetchall()]
+
+
+# ============================================================================
+# ONBOARD ADMIN FUNCTIONS
+# ============================================================================
+
+def add_onboard_admin(user_id: str, added_by: str) -> bool:
+    """Add a user as onboard admin. Returns True if newly added."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "INSERT INTO onboard_admins (user_id, added_by) VALUES (?, ?)",
+                (user_id, added_by)
+            )
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def remove_onboard_admin(user_id: str) -> bool:
+    """Remove a user from onboard admins. Returns True if removed."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM onboard_admins WHERE user_id = ?", (user_id,))
+        return cursor.rowcount > 0
+
+
+def is_onboard_admin(user_id: str) -> bool:
+    """Check if a user is an onboard admin."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM onboard_admins WHERE user_id = ?", (user_id,))
+        return cursor.fetchone() is not None
+
+
+def get_all_onboard_admins() -> list[str]:
+    """Get all onboard admin user IDs."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_id FROM onboard_admins ORDER BY added_at")
+        return [row["user_id"] for row in cursor.fetchall()]
 
 
 # ============================================================================

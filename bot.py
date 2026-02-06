@@ -38,6 +38,7 @@ scheduler = BackgroundScheduler()
 SLACK_INVITE_LINK = os.getenv("SLACK_INVITE_LINK", "")
 WELCOME_METHOD = os.getenv("WELCOME_METHOD", "email")
 ONBOARD_AFTER_DATE = os.getenv("ONBOARD_AFTER_DATE", "")
+ONBOARD_SUPER_ADMIN = os.getenv("ONBOARD_SUPER_ADMIN", "")
 
 
 # ============================================================================
@@ -122,6 +123,13 @@ def handle_event_command(ack, body, client, logger):
 # /onboard SLASH COMMAND HANDLER
 # ============================================================================
 
+def _is_onboard_authorized(user_id: str) -> bool:
+    """Check if a user is authorized to use /onboard commands."""
+    if ONBOARD_SUPER_ADMIN and user_id == ONBOARD_SUPER_ADMIN:
+        return True
+    return db.is_onboard_admin(user_id)
+
+
 @app.command("/onboard")
 def handle_onboard_command(ack, body, client, logger):
     """Handle the /onboard slash command with subcommands."""
@@ -130,6 +138,19 @@ def handle_onboard_command(ack, body, client, logger):
     text = (body.get("text") or "").strip()
     user_id = body["user_id"]
     channel_id = body.get("channel_id", user_id)
+
+    # Admin subcommands (only super admin can manage admins)
+    if text.startswith("admin"):
+        _handle_onboard_admin(text, channel_id, user_id, client)
+        return
+
+    # Check authorization for all other commands
+    if not _is_onboard_authorized(user_id):
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":no_entry: You don't have permission to use `/onboard` commands."
+        )
+        return
 
     if text == "status":
         stats = db.get_onboarding_stats()
@@ -186,6 +207,26 @@ def handle_onboard_command(ack, body, client, logger):
             text=f":white_check_mark: Seeded {count} existing member(s). No emails will be sent to them."
         )
 
+    elif text.startswith("resend-since "):
+        date_str = text[len("resend-since "):].strip()
+        try:
+            cutoff = datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=":warning: Invalid date format. Use: `/onboard resend-since 2025-11-01`"
+            )
+            return
+
+        count = db.unseed_members_since(cutoff)
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=f":white_check_mark: Marked {count} member(s) for re-sending. Run `/onboard run` to send emails now, or wait for the next automatic check."
+        )
+
+    elif "@" in text and not text.startswith(("map ", "unmap ")):
+        _handle_onboard_send_email(text.strip(), channel_id, user_id, client)
+
     else:
         client.chat_postEphemeral(
             channel=channel_id, user=user_id,
@@ -196,7 +237,142 @@ def handle_onboard_command(ack, body, client, logger):
                 "  `/onboard map \"Committee\" #channel` — add a mapping\n"
                 "  `/onboard unmap \"Committee\"` — remove a mapping\n"
                 "  `/onboard run` — manually check for new registrations\n"
-                "  `/onboard seed` — import existing members as already onboarded"
+                "  `/onboard seed` — import existing members as already onboarded\n"
+                "  `/onboard resend-since 2025-11-01` — re-send emails to seeded members after a date\n"
+                "  `/onboard user@example.com` — send welcome email to a specific address\n"
+                "  `/onboard admin list` — show onboard admins\n"
+                "  `/onboard admin add @user` — add an admin\n"
+                "  `/onboard admin remove @user` — remove an admin"
+            )
+        )
+
+
+def _resolve_user_id(text: str, client) -> str:
+    """Resolve a user reference to a Slack user ID.
+    Handles: <@U12345>, <@U12345|name>, @username, or raw username.
+    """
+    # Try <@U12345> format first
+    match = re.search(r'<@(\w+)(?:\|[^>]*)?>', text)
+    if match:
+        return match.group(1)
+
+    # Extract username (strip leading @)
+    username = text.strip().lstrip("@").lower()
+    if not username:
+        return ""
+
+    # Search through workspace users
+    try:
+        cursor = None
+        while True:
+            kwargs = {"limit": 200}
+            if cursor:
+                kwargs["cursor"] = cursor
+            result = client.users_list(**kwargs)
+            for member in result.get("members", []):
+                if member.get("deleted") or member.get("is_bot"):
+                    continue
+                name = (member.get("name") or "").lower()
+                display = (member.get("profile", {}).get("display_name") or "").lower()
+                real = (member.get("real_name") or "").lower()
+                if username in (name, display, real):
+                    return member["id"]
+            cursor = result.get("response_metadata", {}).get("next_cursor")
+            if not cursor:
+                break
+    except Exception as e:
+        logger.error(f"Error looking up user '{username}': {e}")
+
+    return ""
+
+
+def _handle_onboard_admin(text: str, channel_id: str, user_id: str, client):
+    """Handle /onboard admin subcommands."""
+    logger.info(f"Onboard admin raw text: {repr(text)}")
+    # Only super admin can manage admins (add/remove), but any admin can list
+    parts_check = text.split(None, 2)
+    sub_check = parts_check[1] if len(parts_check) > 1 else ""
+    if sub_check in ("add", "remove") and (not ONBOARD_SUPER_ADMIN or user_id != ONBOARD_SUPER_ADMIN):
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":no_entry: Only the super admin can add or remove onboard admins."
+        )
+        return
+    if sub_check == "list" and not _is_onboard_authorized(user_id):
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":no_entry: You don't have permission to use this command."
+        )
+        return
+
+    parts = text.split(None, 2)  # ["admin"] or ["admin", "list"] or ["admin", "add", "<@U123>"]
+    sub = parts[1] if len(parts) > 1 else ""
+
+    if sub == "list":
+        admins = db.get_all_onboard_admins()
+        if ONBOARD_SUPER_ADMIN:
+            lines = [f"Super admin: <@{ONBOARD_SUPER_ADMIN}>"]
+        else:
+            lines = []
+        for uid in admins:
+            lines.append(f"<@{uid}>")
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":busts_in_silhouette: *Onboard Admins:*\n" + "\n".join(lines) if lines else ":warning: No admins configured."
+        )
+
+    elif sub == "add" and len(parts) > 2:
+        target_id = _resolve_user_id(parts[2], client)
+        if not target_id:
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=":warning: Could not find that user. Usage: `/onboard admin add @user`"
+            )
+            return
+        if db.add_onboard_admin(target_id, user_id):
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f":white_check_mark: <@{target_id}> is now an onboard admin."
+            )
+        else:
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f"<@{target_id}> is already an onboard admin."
+            )
+
+    elif sub == "remove" and len(parts) > 2:
+        target_id = _resolve_user_id(parts[2], client)
+        if not target_id:
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=":warning: Could not find that user. Usage: `/onboard admin remove @user`"
+            )
+            return
+        if target_id == ONBOARD_SUPER_ADMIN:
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=":warning: Cannot remove the super admin."
+            )
+            return
+        if db.remove_onboard_admin(target_id):
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f":white_check_mark: <@{target_id}> is no longer an onboard admin."
+            )
+        else:
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f":warning: <@{target_id}> is not an onboard admin."
+            )
+
+    else:
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=(
+                "Usage:\n"
+                "  `/onboard admin list` — show admins\n"
+                "  `/onboard admin add @user` — add an admin\n"
+                "  `/onboard admin remove @user` — remove an admin"
             )
         )
 
@@ -253,6 +429,39 @@ def _find_channel_id_by_name(client, channel_name: str) -> str:
     except Exception as e:
         logger.error(f"Error looking up channel '{channel_name}': {e}")
     return ""
+
+
+def _handle_onboard_send_email(email: str, channel_id: str, user_id: str, client):
+    """Send a welcome email to a single specific address."""
+    invite_link = os.getenv("SLACK_INVITE_LINK", "")
+    if not invite_link:
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":warning: `SLACK_INVITE_LINK` is not set in .env"
+        )
+        return
+
+    member = db.get_member_by_email(email.lower())
+    if member:
+        first_name = member["first_name"] or ""
+        last_name = member["last_name"] or ""
+    else:
+        first_name = ""
+        last_name = ""
+
+    ok = mailer.send_welcome_email(email.lower(), first_name, last_name, invite_link)
+    if ok:
+        if member:
+            db.mark_email_sent(email.lower())
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=f":white_check_mark: Welcome email sent to `{email}`."
+        )
+    else:
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=f":x: Failed to send email to `{email}`. Check bot logs for details."
+        )
 
 
 # ============================================================================
