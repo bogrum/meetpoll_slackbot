@@ -1,21 +1,39 @@
 # MeetPoll - Slack Meeting Poll Bot
 
-A simple, self-hosted Slack bot for creating meeting scheduling polls. Uses Socket Mode (no public URL required) and SQLite for storage. Perfect for Raspberry Pi deployment.
+A self-hosted Slack bot for meeting scheduling polls, event management with RSVPs, and automated new member onboarding. Uses Socket Mode (no public URL required) and SQLite for storage. Perfect for Raspberry Pi deployment.
 
 ## Features
 
+### Polls
 - `/meetpoll` slash command to create polls
 - Support for 5-25 time slot options
 - Checkbox-based multi-select voting
 - Real-time vote counting with transparency (shows who voted)
 - Manual or automatic poll closing
 - Detailed results view
-- Auto-close at scheduled deadline
+
+### Events
+- `/event create` to create events with a modal form
+- `/event list` to see upcoming events
+- Going / Maybe / Not Going RSVP buttons
+- Optional max attendee limit (rejects Going when full)
+- Automatic 24h and 1h reminders via DM to RSVPed users
+- Auto-close events after their scheduled time
+
+### New Member Onboarding
+- Periodically checks a Google Sheet registration form for new entries
+- Sends bilingual (Turkish/English) welcome emails with Slack invite link
+- On `team_join`, auto-adds members to their selected committee channels
+- Sends welcome DM with committee info
+- `/onboard` command for managing the system (status, mappings, manual runs)
+- First-run safety: `/onboard seed` to import existing members without emailing them
 
 ## Prerequisites
 
 - Python 3.8+
 - A Slack workspace where you have admin permissions
+- A Google Cloud project with Sheets API enabled (free, no billing required)
+- A Gmail account with 2-Step Verification and an App Password
 
 ---
 
@@ -47,19 +65,25 @@ Socket Mode allows your bot to connect without a public URL.
 1. In the left sidebar, click **"OAuth & Permissions"**
 2. Scroll to **"Scopes"** section
 3. Under **"Bot Token Scopes"**, add these scopes:
-   - `commands` - For the /meetpoll slash command
-   - `chat:write` - To post poll messages
-   - `users:read` - To display user names (optional but recommended)
+   - `commands` - For slash commands
+   - `chat:write` - To post messages
+   - `chat:write.public` - To post in channels the bot hasn't joined
+   - `users:read` - To read user profiles
+   - `users:read.email` - To match new members by email
+   - `channels:manage` - To invite users to public channels
+   - `groups:write` - To invite users to private channels
+   - `im:write` - To send welcome DMs
 
-### Step 4: Create the Slash Command
+### Step 4: Create Slash Commands
 
 1. In the left sidebar, click **"Slash Commands"**
-2. Click **"Create New Command"**
-3. Fill in:
-   - Command: `/meetpoll`
-   - Short Description: `Create a meeting scheduling poll`
-   - Usage Hint: `(opens poll creation dialog)`
-4. Click **"Save"**
+2. Create three commands:
+
+| Command | Short Description | Usage Hint |
+|---|---|---|
+| `/meetpoll` | Create a meeting scheduling poll | (opens poll creation dialog) |
+| `/event` | Create and manage events | `create` or `list` |
+| `/onboard` | Manage member onboarding | `status`, `list`, `map`, `unmap`, `run`, `seed` |
 
 ### Step 5: Enable Interactivity
 
@@ -68,16 +92,103 @@ Socket Mode allows your bot to connect without a public URL.
 3. You don't need a Request URL with Socket Mode - leave it blank or enter a placeholder
 4. Click **"Save Changes"**
 
-### Step 6: Install the App
+### Step 6: Subscribe to Events
+
+1. In the left sidebar, click **"Event Subscriptions"**
+2. Toggle **"Enable Events"** to ON
+3. Under **"Subscribe to bot events"**, add:
+   - `team_join` - Triggers when a new member joins the workspace
+4. Click **"Save Changes"**
+
+### Step 7: Install the App
 
 1. In the left sidebar, click **"Install App"**
 2. Click **"Install to Workspace"**
 3. Review the permissions and click **"Allow"**
 4. **Copy the "Bot User OAuth Token"** (starts with `xoxb-`)
 
+> **Note:** You must reinstall the app every time you add new scopes or event subscriptions.
+
+### Step 8: Add the Bot to Channels
+
+The bot must be a member of any channel it needs to invite users to. For each committee channel:
+
+1. Open the channel in Slack
+2. Click the channel name at the top
+3. Go to the **Integrations** tab
+4. Click **Add apps** and add **MeetPoll**
+
 ---
 
-## Part 2: Deploy the Bot
+## Part 2: Set Up Google Sheets API
+
+The bot reads new member registrations from a Google Sheet (linked to a Google Form).
+
+### Step 1: Create a Google Cloud Project
+
+1. Go to [https://console.cloud.google.com](https://console.cloud.google.com)
+2. Click **"Select a project"** at the top, then **"New Project"**
+3. Name it (e.g., `meetpoll-bot`) and click **"Create"**
+4. No billing is required for this setup
+
+### Step 2: Enable the Google Sheets API
+
+1. Go to **APIs & Services** > **Library**
+2. Search for **"Google Sheets API"**
+3. Click it and click **"Enable"**
+
+### Step 3: Create a Service Account
+
+1. Go to **APIs & Services** > **Credentials**
+2. Click **"Create Credentials"** > **"Service Account"**
+3. Name it (e.g., `meetpoll-sheets`) and click **"Create and Continue"**
+4. Skip the optional role/access steps and click **"Done"**
+
+### Step 4: Generate a JSON Key
+
+1. Click on the service account you just created
+2. Go to the **Keys** tab
+3. Click **"Add Key"** > **"Create new key"** > **JSON** > **"Create"**
+4. A `.json` file will download — save it as `service_account.json` in your project directory
+
+### Step 5: Share the Google Sheet
+
+1. Open your Google Sheet (the one linked to your registration form)
+2. Click **Share** in the top right
+3. Paste the service account email address (looks like `meetpoll-sheets@your-project.iam.gserviceaccount.com` — find it under IAM & Admin > Service Accounts)
+4. Set role to **Viewer** and click **Send**
+
+### Step 6: Get the Sheet ID and Name
+
+- **Sheet ID**: From the Google Sheet URL — the long string between `/d/` and `/edit`:
+  ```
+  https://docs.google.com/spreadsheets/d/THIS_IS_THE_SHEET_ID/edit#gid=0
+  ```
+- **Sheet Name**: The tab name at the bottom of the sheet (e.g., `Form Responses 1` or `Form Yanıtları 1`)
+
+---
+
+## Part 3: Set Up Gmail for Welcome Emails
+
+The bot sends welcome emails via Gmail SMTP using an App Password.
+
+### Step 1: Enable 2-Step Verification
+
+1. Go to [https://myaccount.google.com/signinoptions/two-step-verification](https://myaccount.google.com/signinoptions/two-step-verification)
+2. Turn on **2-Step Verification** and set up a verification method (phone, authenticator app, etc.)
+
+> **Note:** If you're using a Google Workspace account and can't enable 2-Step Verification (admin restriction), create a free personal `@gmail.com` account for the bot instead.
+
+### Step 2: Create an App Password
+
+1. Go to [https://myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
+2. Enter an app name (e.g., `MeetPoll Bot`)
+3. Click **"Create"**
+4. Copy the 16-character password that appears
+
+---
+
+## Part 4: Deploy the Bot
 
 ### Local Development Setup
 
@@ -96,16 +207,57 @@ pip install -r requirements.txt
 cp .env.template .env
 ```
 
-Edit `.env` with your tokens:
-```
-SLACK_BOT_TOKEN=xoxb-your-bot-token-here
-SLACK_APP_TOKEN=xapp-your-app-token-here
-```
+Edit `.env` with all your credentials (see [Configuring .env](#configuring-env) below).
 
 Run the bot:
 ```bash
 python bot.py
 ```
+
+### Configuring .env
+
+Copy the template and fill in all values:
+
+```bash
+cp .env.template .env
+```
+
+```bash
+# Slack Bot Tokens (from Part 1)
+SLACK_BOT_TOKEN=xoxb-your-bot-token-here
+SLACK_APP_TOKEN=xapp-your-app-token-here
+
+# Database path (defaults to ./meetpoll.db)
+DATABASE_PATH=./meetpoll.db
+
+# Google Sheets (from Part 2)
+GOOGLE_SERVICE_ACCOUNT_PATH=./service_account.json
+GOOGLE_SHEET_ID=your-google-sheet-id-here
+GOOGLE_SHEET_NAME=Form Responses 1
+
+# Gmail SMTP (from Part 3)
+GMAIL_SENDER_ADDRESS=your-email@gmail.com
+GMAIL_APP_PASSWORD=abcd efgh ijkl mnop
+
+# Onboarding
+SLACK_INVITE_LINK=https://join.slack.com/t/your-workspace/shared_invite/xxx
+WELCOME_METHOD=email
+ONBOARD_AFTER_DATE=
+```
+
+| Variable | Description |
+|---|---|
+| `SLACK_BOT_TOKEN` | Bot User OAuth Token from Slack app settings (starts with `xoxb-`) |
+| `SLACK_APP_TOKEN` | App-Level Token for Socket Mode (starts with `xapp-`) |
+| `DATABASE_PATH` | Path to SQLite database file (created automatically) |
+| `GOOGLE_SERVICE_ACCOUNT_PATH` | Path to the service account JSON key file |
+| `GOOGLE_SHEET_ID` | The ID from your Google Sheet URL |
+| `GOOGLE_SHEET_NAME` | The sheet tab name (e.g., `Form Responses 1`) |
+| `GMAIL_SENDER_ADDRESS` | Gmail address used to send welcome emails |
+| `GMAIL_APP_PASSWORD` | 16-character Gmail App Password |
+| `SLACK_INVITE_LINK` | Workspace invite link (get it from Slack: workspace menu > Invite people) |
+| `WELCOME_METHOD` | `email` (send email only), `slack_dm` (DM only), or `both` |
+| `ONBOARD_AFTER_DATE` | Optional cutoff date (e.g., `2026-02-01`). Entries before this date are ignored. Leave empty to process all. |
 
 ### Raspberry Pi Deployment
 
@@ -124,7 +276,7 @@ mkdir -p ~/meetpoll
 cd ~/meetpoll
 
 # Copy project files (from your local machine)
-# scp -r ./* pi@raspberrypi.local:~/meetpoll/
+# scp bot.py database.py blocks.py sheets.py mailer.py requirements.txt .env service_account.json pi@raspberrypi.local:~/meetpoll/
 
 # Create virtual environment
 python3 -m venv venv
@@ -132,10 +284,6 @@ source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
-
-# Configure environment
-cp .env.template .env
-nano .env  # Add your tokens
 ```
 
 #### Set Up as System Service
@@ -159,57 +307,128 @@ sudo systemctl status meetpoll
 sudo journalctl -u meetpoll -f
 ```
 
+#### Deploying Updates
+
+From your local machine:
+```bash
+scp bot.py database.py blocks.py sheets.py mailer.py requirements.txt pi@raspberrypi.local:~/meetpoll/
+```
+
+Then on the Pi:
+```bash
+sudo systemctl restart meetpoll
+```
+
 #### Service Management Commands
 
 ```bash
-# Stop the bot
-sudo systemctl stop meetpoll
-
-# Restart the bot
-sudo systemctl restart meetpoll
-
-# View recent logs
-sudo journalctl -u meetpoll -n 50
-
-# View live logs
-sudo journalctl -u meetpoll -f
+sudo systemctl stop meetpoll       # Stop the bot
+sudo systemctl restart meetpoll    # Restart the bot
+sudo journalctl -u meetpoll -n 50  # View recent logs
+sudo journalctl -u meetpoll -f     # View live logs
 ```
+
+---
+
+## Part 5: First Run
+
+### 1. Start the Bot
+
+```bash
+python bot.py
+```
+
+You should see:
+```
+Scheduler started (polls, registrations, events)
+MeetPoll bot starting in Socket Mode...
+Bolt app is running!
+```
+
+### 2. Seed Existing Members
+
+If your Google Sheet already has registrations, run this in Slack **before anything else** to prevent sending welcome emails to existing members:
+
+```
+/onboard seed
+```
+
+This imports all current entries as already-onboarded. No emails will be sent to them.
+
+### 3. Set Up Committee Mappings
+
+Map committee names to Slack channels. In Slack:
+
+```
+/onboard map "Journal Club" #journal-club
+/onboard map "Webinar" #webinar
+/onboard map "Website" #website
+```
+
+Repeat for each committee. Verify with:
+```
+/onboard list
+```
+
+### 4. Verify the Setup
+
+```
+/onboard status
+```
+
+Should show your seeded member count as `fully_onboarded`.
+
+### 5. Test with a New Entry
+
+1. Add a test entry to your Google Form with your own email
+2. Run `/onboard run` in Slack (or wait up to 1 hour for automatic check)
+3. Check your email for the welcome message
+4. Join the workspace with the link and verify you're added to the correct channels
 
 ---
 
 ## Usage
 
-### Creating a Poll
+### Polls
 
 1. In any Slack channel, type `/meetpoll`
 2. A modal dialog will open with these fields:
    - **Poll Question**: e.g., "When should we have our weekly sync?"
    - **Time Options**: Enter one time slot per line (5-25 options required)
    - **Close Date/Time**: Optional auto-close deadline
-
-Example time options:
-```
-Monday 9:00 AM
-Monday 2:00 PM
-Tuesday 10:00 AM
-Tuesday 3:00 PM
-Wednesday 11:00 AM
-```
-
 3. Click **"Create Poll"**
 
-### Voting
-
+Voting:
 - Click the checkboxes next to times that work for you
 - You can select multiple options
-- Your votes are updated in real-time
-- Everyone can see who voted for what (transparency for scheduling)
+- Votes are updated in real-time with full transparency
 
-### Managing Polls
+### Events
 
-- **View Results**: Click to see a detailed breakdown in a modal
-- **Close Poll**: Only the poll creator can manually close a poll
-- Polls auto-close at the scheduled deadline if set
+- `/event create` — Opens a modal to create an event (title, date, time, location, description, max attendees)
+- `/event list` — Shows upcoming events
+
+RSVP buttons appear on the event message: **Going**, **Maybe**, **Not Going**. If a max attendee limit is set, Going is blocked when full. Reminders are sent via DM 24 hours and 1 hour before the event.
+
+### Onboarding Management
+
+| Command | Description |
+|---|---|
+| `/onboard status` | Show onboarding statistics |
+| `/onboard list` | Show committee-to-channel mappings |
+| `/onboard map "Committee" #channel` | Add or update a mapping |
+| `/onboard unmap "Committee"` | Remove a mapping |
+| `/onboard run` | Manually check Google Sheet for new registrations |
+| `/onboard seed` | Import all existing entries as already-onboarded (first-run safety) |
+
+### Automatic Background Jobs
+
+| Job | Interval | Description |
+|---|---|---|
+| Registration check | Every 1 hour | Checks Google Sheet for new entries, sends welcome emails |
+| Event reminders | Every 5 minutes | Sends 24h/1h reminder DMs to RSVPed users |
+| Past event closer | Every 10 minutes | Auto-closes events after their scheduled time |
+| Poll closer | Every 1 minute | Auto-closes polls past their deadline |
 
 ---
 
@@ -217,81 +436,65 @@ Wednesday 11:00 AM
 
 ```
 meetpoll/
-├── bot.py              # Main bot application
-├── database.py         # SQLite database operations
-├── blocks.py           # Slack Block Kit UI builders
-├── requirements.txt    # Python dependencies
-├── .env.template       # Environment variables template
-├── .env                # Your actual environment file (don't commit!)
-├── meetpoll.service    # Systemd service file
-├── meetpoll.db         # SQLite database (created automatically)
-└── README.md           # This file
+├── bot.py                # Main bot application (commands, handlers, scheduler)
+├── database.py           # SQLite database operations
+├── blocks.py             # Slack Block Kit UI builders
+├── sheets.py             # Google Sheets API client
+├── mailer.py             # Gmail SMTP email sender
+├── requirements.txt      # Python dependencies
+├── .env.template         # Environment variables template
+├── .env                  # Your actual environment file (do not commit)
+├── service_account.json  # Google service account key (do not commit)
+├── meetpoll.service      # Systemd service file for Raspberry Pi
+├── meetpoll.db           # SQLite database (created automatically)
+└── README.md             # This file
 ```
-
----
-
-## Database Schema
-
-The bot uses SQLite with three tables:
-
-**polls**
-- `id`: Primary key
-- `question`: Poll question text
-- `creator_id`: Slack user ID of creator
-- `channel_id`: Channel where poll was posted
-- `message_ts`: Slack message timestamp (for updates)
-- `created_at`: Creation timestamp
-- `closes_at`: Optional close deadline
-- `status`: 'open' or 'closed'
-
-**options**
-- `id`: Primary key
-- `poll_id`: Foreign key to polls
-- `option_text`: The time slot text
-- `option_order`: Display order
-
-**votes**
-- `id`: Primary key
-- `poll_id`: Foreign key to polls
-- `option_id`: Foreign key to options
-- `user_id`: Slack user ID
-- `voted_at`: Vote timestamp
 
 ---
 
 ## Troubleshooting
 
-### Bot doesn't respond to /meetpoll
+### Bot doesn't respond to commands
 
 1. Check the bot is running: `sudo systemctl status meetpoll`
 2. Verify tokens in `.env` are correct
-3. Make sure the app is installed to your workspace
+3. Make sure the app is installed/reinstalled after adding scopes
 4. Check Socket Mode is enabled in app settings
+
+### "channel_not_found" when onboarding
+
+The bot must be a member of each committee channel before it can invite users. Add the bot to the channel via Slack: Channel settings > Integrations > Add apps.
 
 ### "not_in_channel" error
 
-The bot needs to be in the channel to post. Either:
-- Invite the bot: `/invite @MeetPoll`
-- Or have the bot DM the poll to the creator
+Invite the bot to the channel: `/invite @MeetPoll`
 
-### Votes not saving
+### Google Sheets returns 0 registrations
+
+1. Verify `GOOGLE_SHEET_ID` and `GOOGLE_SHEET_NAME` in `.env`
+2. Make sure you shared the Google Sheet with the service account email (Viewer access)
+3. Check the service account JSON path is correct
+
+### Welcome emails not sending
+
+1. Verify `GMAIL_SENDER_ADDRESS` and `GMAIL_APP_PASSWORD` in `.env`
+2. Make sure 2-Step Verification is enabled on the Gmail account
+3. Check that `SLACK_INVITE_LINK` is set
+4. Check logs: `sudo journalctl -u meetpoll --since "1 hour ago"`
+
+### Votes/RSVPs not saving
 
 1. Check database permissions: `ls -la meetpoll.db`
 2. View logs: `sudo journalctl -u meetpoll -n 100`
-
-### Modal doesn't open
-
-1. Verify "Interactivity" is enabled in app settings
-2. Check that the bot has the `commands` scope
 
 ---
 
 ## Security Notes
 
-- Never commit your `.env` file
-- The `.env.template` file is safe to commit
-- Database file contains user IDs but no sensitive data
-- Consider adding `.env` and `*.db` to `.gitignore`
+- Never commit `.env` or `service_account.json` — both are in `.gitignore`
+- The Gmail App Password grants email-sending access — keep it secret
+- The service account only has read-only access to the Google Sheet
+- Database file contains user IDs and emails but no authentication credentials
 
 ---
 
