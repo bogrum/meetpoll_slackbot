@@ -61,6 +61,22 @@ def send_welcome_email(to_email: str, first_name: str, last_name: str,
 
     <p>Katıldığınızda se&ccedil;tiğiniz komite kanallarına otomatik olarak ekleneceksiniz. Eğer link ile ilgili bir sorun yaşarsanız bu e-postaya geri d&ouml;n&uuml;ş yapabilirsiniz.</p>
 
+    <p style="text-align: center; margin: 20px 0;">
+        Bizi sosyal medyadan takip edin:<br><br>
+        <a href="https://www.linkedin.com/company/rsgturkey/posts/?feedView=all" style="text-decoration: none; display: inline-block; margin: 4px;">
+            <img src="https://cdn-icons-png.flaticon.com/32/3536/3536505.png" alt="LinkedIn" width="32" height="32" style="vertical-align: middle;">
+        </a>
+        <a href="https://www.instagram.com/rsgturkey/" style="text-decoration: none; display: inline-block; margin: 4px;">
+            <img src="https://cdn-icons-png.flaticon.com/32/2111/2111463.png" alt="Instagram" width="32" height="32" style="vertical-align: middle;">
+        </a>
+        <a href="https://x.com/RSGTurkey" style="text-decoration: none; display: inline-block; margin: 4px;">
+            <img src="https://cdn-icons-png.flaticon.com/32/5968/5968830.png" alt="X" width="32" height="32" style="vertical-align: middle;">
+        </a>
+        <a href="https://www.youtube.com/channel/UCRM_72rELTgtWK_zKlDGxxQ" style="text-decoration: none; display: inline-block; margin: 4px;">
+            <img src="https://cdn-icons-png.flaticon.com/32/1384/1384060.png" alt="YouTube" width="32" height="32" style="vertical-align: middle;">
+        </a>
+    </p>
+
     <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
 
     <h2>Hello!</h2>
@@ -81,6 +97,22 @@ def send_welcome_email(to_email: str, first_name: str, last_name: str,
     </p>
 
     <p>Once you join, you'll be automatically added to your selected committee channels. If you have any issues with the link, feel free to reply to this email.</p>
+
+    <p style="text-align: center; margin: 20px 0;">
+        Follow us on social media:<br><br>
+        <a href="https://www.linkedin.com/company/rsgturkey/posts/?feedView=all" style="text-decoration: none; display: inline-block; margin: 4px;">
+            <img src="https://cdn-icons-png.flaticon.com/32/3536/3536505.png" alt="LinkedIn" width="32" height="32" style="vertical-align: middle;">
+        </a>
+        <a href="https://www.instagram.com/rsgturkey/" style="text-decoration: none; display: inline-block; margin: 4px;">
+            <img src="https://cdn-icons-png.flaticon.com/32/2111/2111463.png" alt="Instagram" width="32" height="32" style="vertical-align: middle;">
+        </a>
+        <a href="https://x.com/RSGTurkey" style="text-decoration: none; display: inline-block; margin: 4px;">
+            <img src="https://cdn-icons-png.flaticon.com/32/5968/5968830.png" alt="X" width="32" height="32" style="vertical-align: middle;">
+        </a>
+        <a href="https://www.youtube.com/channel/UCRM_72rELTgtWK_zKlDGxxQ" style="text-decoration: none; display: inline-block; margin: 4px;">
+            <img src="https://cdn-icons-png.flaticon.com/32/1384/1384060.png" alt="YouTube" width="32" height="32" style="vertical-align: middle;">
+        </a>
+    </p>
 
     <p>İyi g&uuml;nler diliyoruz! / Have a nice day! 🌟</p>
 
@@ -103,6 +135,12 @@ Genel haberleşme, etkinlik ve organizasyon duyuruları ile birlikte toplantı g
 
 Katıldığınızda seçtiğiniz komite kanallarına otomatik olarak ekleneceksiniz. Eğer link ile ilgili bir sorun yaşarsanız bu e-postaya geri dönüş yapabilirsiniz.
 
+Bizi sosyal medyadan takip edin:
+LinkedIn: https://www.linkedin.com/company/rsgturkey/posts/?feedView=all
+Instagram: https://www.instagram.com/rsgturkey/
+X (Twitter): https://x.com/RSGTurkey
+YouTube: https://www.youtube.com/channel/UCRM_72rELTgtWK_zKlDGxxQ
+
 ---
 
 Hello!
@@ -116,6 +154,12 @@ We use Slack for general communication, event announcements, and meeting schedul
 {invite_link}
 
 Once you join, you'll be automatically added to your selected committee channels. If you have any issues with the link, feel free to reply to this email.
+
+Bizi sosyal medyadan takip edin / Follow us on social media:
+LinkedIn: https://www.linkedin.com/company/rsgturkey/posts/?feedView=all
+Instagram: https://www.instagram.com/rsgturkey/
+X (Twitter): https://x.com/RSGTurkey
+YouTube: https://www.youtube.com/channel/UCRM_72rELTgtWK_zKlDGxxQ
 
 Iyi gunler diliyoruz! / Have a nice day!
 
