@@ -6,7 +6,10 @@ Uses Socket Mode for easy deployment without a public URL.
 
 import os
 import re
+import json
+import time
 import logging
+import threading
 from datetime import datetime
 from dotenv import load_dotenv
 from slack_bolt import App
@@ -465,6 +468,77 @@ def _handle_onboard_send_email(email: str, channel_id: str, user_id: str, client
 
 
 # ============================================================================
+# /outreach SLASH COMMAND HANDLER
+# ============================================================================
+
+@app.command("/outreach")
+def handle_outreach_command(ack, body, client, logger):
+    """Handle the /outreach slash command with subcommands."""
+    ack()
+
+    text = (body.get("text") or "").strip()
+    user_id = body["user_id"]
+    channel_id = body.get("channel_id", user_id)
+
+    if text in ("academics", "clubs"):
+        if not _is_onboard_authorized(user_id):
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=":no_entry: You don't have permission to use `/outreach` commands."
+            )
+            return
+        try:
+            modal = blocks.build_outreach_compose_modal(text)
+            modal["private_metadata"] = json.dumps({
+                "channel_id": channel_id,
+                "audience_type": text
+            })
+            client.views_open(trigger_id=body["trigger_id"], view=modal)
+        except Exception as e:
+            logger.error(f"Error opening outreach modal: {e}")
+
+    elif text == "status":
+        if not _is_onboard_authorized(user_id):
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=":no_entry: You don't have permission to use `/outreach` commands."
+            )
+            return
+        stats = db.get_outreach_stats()
+        status_blocks = blocks.build_outreach_status_blocks(stats)
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            blocks=status_blocks, text="Outreach statistics"
+        )
+
+    elif text == "history":
+        if not _is_onboard_authorized(user_id):
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=":no_entry: You don't have permission to use `/outreach` commands."
+            )
+            return
+        campaigns = db.get_recent_outreach_campaigns(limit=10)
+        history_blocks = blocks.build_outreach_history_blocks(campaigns)
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            blocks=history_blocks, text="Recent outreach campaigns"
+        )
+
+    else:
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=(
+                "Usage:\n"
+                "  `/outreach academics` \u2014 compose email to academic contacts\n"
+                "  `/outreach clubs` \u2014 compose email to student clubs\n"
+                "  `/outreach status` \u2014 show outreach statistics\n"
+                "  `/outreach history` \u2014 show recent campaigns"
+            )
+        )
+
+
+# ============================================================================
 # MODAL SUBMISSION HANDLERS
 # ============================================================================
 
@@ -638,6 +712,93 @@ def handle_event_creation(ack, body, client, view, logger):
 
     except Exception as e:
         logger.error(f"Error creating event: {e}")
+
+
+@app.view("outreach_compose_modal")
+def handle_outreach_compose(ack, body, client, view, logger):
+    """Handle outreach compose modal submission — fetch contacts, create campaign, show preview."""
+    values = view["state"]["values"]
+
+    audience_type = values["audience_block"]["audience_select"]["selected_option"]["value"]
+    subject = values["subject_block"]["subject_input"]["value"].strip()
+    email_body = values["body_block"]["body_input"]["value"].strip()
+
+    ack()
+
+    user_id = body["user"]["id"]
+    metadata = json.loads(view.get("private_metadata") or "{}")
+    channel_id = metadata.get("channel_id", user_id)
+
+    try:
+        # Fetch contacts from appropriate sheet
+        if audience_type == "academics":
+            contacts = sheets.fetch_outreach_academics()
+        else:
+            contacts = sheets.fetch_outreach_clubs()
+
+        if not contacts:
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f":warning: No contacts found in the {audience_type} Google Sheet. Check the sheet ID and data."
+            )
+            return
+
+        # Build recipient list with pre-computed greetings
+        recipients = []
+        for c in contacts:
+            if audience_type == "academics":
+                full_name = c.get("full_name", "").strip()
+                greeting = f"Say\u0131n {full_name} Hocam,"
+                display_name = full_name
+            else:
+                club_name = c.get("club_name", "").strip()
+                greeting = f"Sevgili {club_name},"
+                display_name = club_name
+
+            recipients.append({
+                "email": c["email"],
+                "name": display_name,
+                "greeting": greeting
+            })
+
+        # Create campaign in database
+        campaign_id = db.create_outreach_campaign(
+            audience_type=audience_type,
+            subject=subject,
+            body=email_body,
+            sender_user_id=user_id,
+            channel_id=channel_id
+        )
+        db.add_outreach_recipients(campaign_id, recipients)
+
+        # Build preview samples
+        samples = []
+        for r in recipients[:3]:
+            samples.append({
+                "email": r["email"],
+                "greeting": r["greeting"],
+                "body_preview": email_body
+            })
+
+        preview_blocks = blocks.build_outreach_preview_blocks(
+            campaign_id=campaign_id,
+            audience_type=audience_type,
+            subject=subject,
+            samples=samples,
+            total=len(recipients)
+        )
+
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            blocks=preview_blocks, text="Outreach preview"
+        )
+
+    except Exception as e:
+        logger.error(f"Error in outreach compose: {e}")
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=f":x: Error preparing outreach: {e}"
+        )
 
 
 # ============================================================================
@@ -837,6 +998,179 @@ def _handle_rsvp(body, client, logger, response: str):
 
     except Exception as e:
         logger.error(f"Error handling RSVP: {e}")
+
+
+# ============================================================================
+# OUTREACH ACTION HANDLERS
+# ============================================================================
+
+@app.action(re.compile(r"outreach_confirm_\d+"))
+def handle_outreach_confirm(ack, body, client, logger):
+    """Handle Confirm Send button on outreach preview."""
+    ack()
+
+    action = body["actions"][0]
+    campaign_id = int(action["value"])
+    user_id = body["user"]["id"]
+    channel_id = body["channel"]["id"]
+
+    if not _is_onboard_authorized(user_id):
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":no_entry: You don't have permission to send outreach."
+        )
+        return
+
+    try:
+        campaign = db.get_outreach_campaign(campaign_id)
+        if not campaign or campaign["status"] != "draft":
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=":warning: This campaign is no longer in draft status."
+            )
+            return
+
+        db.update_outreach_campaign_status(campaign_id, "sending")
+
+        client.chat_postMessage(
+            channel=channel_id,
+            text=f":rocket: Outreach campaign #{campaign_id} started! Sending {campaign['total_recipients']} emails to {campaign['audience_type']}. Subject: _{campaign['subject']}_"
+        )
+
+        # Start background send thread
+        thread = threading.Thread(
+            target=_run_outreach_campaign,
+            args=(campaign_id, channel_id, client),
+            daemon=True
+        )
+        thread.start()
+
+    except Exception as e:
+        logger.error(f"Error confirming outreach: {e}")
+
+
+@app.action(re.compile(r"outreach_details_\d+"))
+def handle_outreach_details(ack, body, client, logger):
+    """Handle Details button on outreach history."""
+    ack()
+
+    action = body["actions"][0]
+    campaign_id = int(action["value"])
+    user_id = body["user"]["id"]
+    channel_id = body["channel"]["id"]
+
+    try:
+        campaign = db.get_outreach_campaign(campaign_id)
+        if not campaign:
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=":warning: Campaign not found."
+            )
+            return
+
+        recipients = db.get_outreach_recipients(campaign_id)
+        detail_blocks = blocks.build_outreach_detail_blocks(campaign, recipients)
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            blocks=detail_blocks, text=f"Campaign details: {campaign['subject']}"
+        )
+    except Exception as e:
+        logger.error(f"Error showing outreach details: {e}")
+
+
+@app.action(re.compile(r"outreach_cancel_\d+"))
+def handle_outreach_cancel(ack, body, client, logger):
+    """Handle Cancel button on outreach preview."""
+    ack()
+
+    action = body["actions"][0]
+    campaign_id = int(action["value"])
+    user_id = body["user"]["id"]
+    channel_id = body["channel"]["id"]
+
+    try:
+        campaign = db.get_outreach_campaign(campaign_id)
+        if campaign and campaign["status"] in ("draft", "sending"):
+            db.update_outreach_campaign_status(campaign_id, "cancelled", completed=True)
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f":no_entry_sign: Outreach campaign #{campaign_id} cancelled."
+            )
+    except Exception as e:
+        logger.error(f"Error cancelling outreach: {e}")
+
+
+def _run_outreach_campaign(campaign_id: int, channel_id: str, client):
+    """Background function to send outreach emails with rate limiting."""
+    try:
+        campaign = db.get_outreach_campaign(campaign_id)
+        if not campaign:
+            return
+
+        recipients = db.get_pending_outreach_recipients(campaign_id)
+        total = len(recipients)
+        sent = 0
+        failed = 0
+
+        for i, recipient in enumerate(recipients):
+            # Check for cancellation
+            current = db.get_outreach_campaign(campaign_id)
+            if not current or current["status"] == "cancelled":
+                logger.info(f"Outreach campaign {campaign_id} cancelled mid-send")
+                break
+
+            success = mailer.send_outreach_email(
+                to_email=recipient["email"],
+                subject=campaign["subject"],
+                greeting=recipient["greeting"],
+                body=campaign["body"]
+            )
+
+            if success:
+                db.mark_outreach_recipient_sent(recipient["id"])
+                sent += 1
+            else:
+                db.mark_outreach_recipient_failed(recipient["id"], "SMTP send failed")
+                failed += 1
+
+            # Update counts every send
+            db.update_outreach_campaign_counts(campaign_id)
+
+            # Post progress every 10 emails
+            if (i + 1) % 10 == 0:
+                try:
+                    client.chat_postMessage(
+                        channel=channel_id,
+                        text=f":hourglass_flowing_sand: Outreach #{campaign_id} progress: {sent + failed}/{total} processed ({sent} sent, {failed} failed)"
+                    )
+                except Exception:
+                    pass
+
+            # Rate limit: 2.5s between sends (Pi-friendly, ~500/day safe)
+            if i < len(recipients) - 1:
+                time.sleep(2.5)
+
+        # Final status
+        db.update_outreach_campaign_counts(campaign_id)
+        current = db.get_outreach_campaign(campaign_id)
+        if current and current["status"] == "sending":
+            final_status = "completed" if failed == 0 else "failed"
+            db.update_outreach_campaign_status(campaign_id, final_status, completed=True)
+
+        try:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f":white_check_mark: Outreach campaign #{campaign_id} finished! {sent} sent, {failed} failed out of {total} recipients."
+            )
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.error(f"Error in outreach campaign {campaign_id}: {e}")
+        try:
+            db.update_outreach_campaign_status(campaign_id, "failed", completed=True)
+        except Exception:
+            pass
 
 
 # ============================================================================
