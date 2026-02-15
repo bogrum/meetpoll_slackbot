@@ -135,6 +135,142 @@ def fetch_registrations() -> list[dict]:
         return []
 
 
+def fetch_outreach_academics() -> list[dict]:
+    """
+    Fetch academic contacts from the outreach academics Google Sheet.
+    Returns list of dicts: {first_name, last_name, email, title, institution}
+    """
+    sheet_id = os.getenv("OUTREACH_ACADEMICS_SHEET_ID")
+    sheet_name = os.getenv("OUTREACH_ACADEMICS_SHEET_NAME", "Sheet1")
+
+    if not sheet_id:
+        logger.error("OUTREACH_ACADEMICS_SHEET_ID not set")
+        return []
+
+    try:
+        service = _get_service()
+        result = (
+            service.spreadsheets()
+            .values()
+            .get(spreadsheetId=sheet_id, range=sheet_name)
+            .execute()
+        )
+
+        rows = result.get("values", [])
+        if len(rows) < 2:
+            return []
+
+        headers = rows[0]
+        contacts = []
+        for row in rows[1:]:
+            padded = row + [""] * (len(headers) - len(row))
+            raw = dict(zip(headers, padded))
+            normalized = _normalize_academic_row(raw)
+            if normalized and normalized.get("email"):
+                contacts.append(normalized)
+
+        logger.info(f"Fetched {len(contacts)} academic contacts from Google Sheet")
+        return contacts
+
+    except Exception as e:
+        logger.error(f"Error fetching academic contacts: {e}")
+        return []
+
+
+def fetch_outreach_clubs() -> list[dict]:
+    """
+    Fetch club contacts from the outreach clubs Google Sheet.
+    Returns list of dicts: {club_name, contact_person, email}
+    """
+    sheet_id = os.getenv("OUTREACH_CLUBS_SHEET_ID")
+    sheet_name = os.getenv("OUTREACH_CLUBS_SHEET_NAME", "Sheet1")
+
+    if not sheet_id:
+        logger.error("OUTREACH_CLUBS_SHEET_ID not set")
+        return []
+
+    try:
+        service = _get_service()
+        result = (
+            service.spreadsheets()
+            .values()
+            .get(spreadsheetId=sheet_id, range=sheet_name)
+            .execute()
+        )
+
+        rows = result.get("values", [])
+        if len(rows) < 2:
+            return []
+
+        headers = rows[0]
+        contacts = []
+        for row in rows[1:]:
+            padded = row + [""] * (len(headers) - len(row))
+            raw = dict(zip(headers, padded))
+            normalized = _normalize_club_row(raw)
+            if normalized and normalized.get("email"):
+                contacts.append(normalized)
+
+        logger.info(f"Fetched {len(contacts)} club contacts from Google Sheet")
+        return contacts
+
+    except Exception as e:
+        logger.error(f"Error fetching club contacts: {e}")
+        return []
+
+
+def _normalize_academic_row(raw: dict) -> dict:
+    """Normalize an academic contact row. Handles Turkish/English column names.
+    Supports both combined 'Ad Soyad' and separate 'Ad'/'Soyad' columns.
+    """
+    normalized = {}
+    for key, value in raw.items():
+        key_lower = key.lower().strip()
+        val = str(value).strip() if value else ""
+        if not val:
+            continue
+
+        if key_lower in ("e-posta", "email", "e-mail", "mail"):
+            normalized["email"] = val.lower()
+        elif key_lower in ("ad soyad", "ad-soyad", "isim", "name", "full name"):
+            normalized["full_name"] = val
+        elif key_lower in ("ad", "first name", "first_name"):
+            normalized["first_name"] = val
+        elif key_lower in ("soyad", "last name", "last_name", "family name", "soyisim"):
+            normalized["last_name"] = val
+        elif key_lower in ("unvan", "\u00fcnvan", "title", "academic title"):
+            normalized["title"] = val
+        elif key_lower in ("\u00fcniversite", "kurum", "institution", "university"):
+            normalized["institution"] = val
+
+    # If we have a combined full_name but no separate first/last, keep full_name as-is
+    # If we have separate first/last but no full_name, combine them
+    if "full_name" not in normalized and "first_name" in normalized:
+        parts = [normalized.get("first_name", ""), normalized.get("last_name", "")]
+        normalized["full_name"] = " ".join(p for p in parts if p)
+
+    return normalized
+
+
+def _normalize_club_row(raw: dict) -> dict:
+    """Normalize a club contact row. Handles Turkish/English column names."""
+    normalized = {}
+    for key, value in raw.items():
+        key_lower = key.lower().strip()
+        val = str(value).strip() if value else ""
+        if not val:
+            continue
+
+        if "email" in key_lower:
+            normalized["email"] = val.lower()
+        elif key_lower in ("kul\u00fcp ad\u0131", "club name", "club", "kul\u00fcp"):
+            normalized["club_name"] = val
+        elif key_lower in ("ileti\u015fim ki\u015fisi", "contact person", "contact", "ki\u015fi"):
+            normalized["contact_person"] = val
+
+    return normalized
+
+
 def _normalize_row(raw: dict) -> dict:
     """Normalize a raw sheet row into a standard dict."""
     # Actual column headers from the form:
