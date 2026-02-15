@@ -28,6 +28,16 @@ A self-hosted Slack bot for meeting scheduling polls, event management with RSVP
 - `/onboard` command for managing the system (status, mappings, manual runs)
 - First-run safety: `/onboard seed` to import existing members without emailing them
 
+### Outreach Emails
+- `/outreach academics` — compose personalized emails to academic contacts from a Google Sheet
+- `/outreach clubs` — compose personalized emails to student clubs from a Google Sheet
+- Auto-prepended greetings: "Sayın {Ad Soyad} Hocam," for academics, "Sevgili {Kulüp Adı}," for clubs
+- Preview with 3 sample emails before confirming send
+- Rate-limited background sending (2.5s between emails, Pi-friendly)
+- Resumable campaigns — each recipient tracked individually
+- `/outreach status` — aggregate statistics
+- `/outreach history` — recent campaigns with expandable details
+
 ## Prerequisites
 
 - Python 3.8+
@@ -84,6 +94,7 @@ Socket Mode allows your bot to connect without a public URL.
 | `/meetpoll` | Create a meeting scheduling poll | (opens poll creation dialog) |
 | `/event` | Create and manage events | `create` or `list` |
 | `/onboard` | Manage member onboarding | `status`, `list`, `map`, `unmap`, `run`, `seed` |
+| `/outreach` | Send personalized outreach emails | `academics`, `clubs`, `status`, `history` |
 
 ### Step 5: Enable Interactivity
 
@@ -259,6 +270,10 @@ ONBOARD_AFTER_DATE=
 | `WELCOME_METHOD` | `email` (send email only), `slack_dm` (DM only), or `both` |
 | `ONBOARD_AFTER_DATE` | Optional cutoff date (e.g., `2026-02-01`). Entries before this date are ignored. Leave empty to process all. |
 | `ONBOARD_SUPER_ADMIN` | Your Slack Member ID (get it from your Slack profile > "..." > Copy member ID). This user can manage onboard admins and cannot be removed. |
+| `OUTREACH_ACADEMICS_SHEET_ID` | Google Sheet ID for academic contacts |
+| `OUTREACH_ACADEMICS_SHEET_NAME` | Sheet tab name (default: `Sheet1`) |
+| `OUTREACH_CLUBS_SHEET_ID` | Google Sheet ID for student club contacts |
+| `OUTREACH_CLUBS_SHEET_NAME` | Sheet tab name (default: `Sheet1`) |
 
 ### Raspberry Pi Deployment
 
@@ -413,7 +428,7 @@ RSVP buttons appear on the event message: **Going**, **Maybe**, **Not Going**. I
 
 ### Onboarding Management
 
-> **Access Control:** `/onboard` commands are restricted to authorized admins only. Set `ONBOARD_SUPER_ADMIN` in `.env` with your Slack Member ID, then use `/onboard admin add @user` to grant access to others.
+> **Access Control:** `/onboard` and `/outreach` commands are restricted to authorized admins only. Set `ONBOARD_SUPER_ADMIN` in `.env` with your Slack Member ID, then use `/onboard admin add @user` to grant access to others.
 
 | Command | Description |
 |---|---|
@@ -428,6 +443,24 @@ RSVP buttons appear on the event message: **Going**, **Maybe**, **Not Going**. I
 | `/onboard admin list` | Show all onboard admins |
 | `/onboard admin add @user` | Add an onboard admin (super admin only) |
 | `/onboard admin remove @user` | Remove an onboard admin (super admin only) |
+
+### Outreach
+
+| Command | Description |
+|---|---|
+| `/outreach academics` | Compose and send personalized emails to academic contacts |
+| `/outreach clubs` | Compose and send personalized emails to student clubs |
+| `/outreach status` | Show aggregate outreach statistics |
+| `/outreach history` | Show recent campaigns with expandable details |
+
+**Outreach flow:**
+1. Run `/outreach academics` (or `clubs`) — a compose modal opens
+2. Enter subject and body — the greeting is auto-prepended per recipient
+3. Click **Preview** — see 3 sample emails with personalized greetings
+4. Click **Confirm Send** — emails are sent in the background with 2.5s rate limiting
+5. Progress updates are posted to the channel every 10 emails
+
+**Google Sheets setup:** Create a sheet with academic contacts (columns: `Ünvan`, `Ad Soyad`, `E-posta`, `Üniversite`, etc.) or club contacts (columns: `Kulüp Adı`, `İletişim Kişisi`, `Email`). Share each sheet with the service account email as Viewer.
 
 ### Automatic Background Jobs
 
