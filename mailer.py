@@ -185,3 +185,88 @@ ISCB-SC RSG-Türkiye Ekibi adına / On behalf of the ISCB-SC RSG-Türkiye Team""
     except Exception as e:
         logger.error(f"Failed to send email to {to_email}: {e}")
         return False
+
+
+def send_outreach_email(to_email: str, subject: str, greeting: str,
+                         body: str) -> bool:
+    """
+    Send a personalized outreach email.
+    greeting: full greeting line, e.g. "Sayın Prof. Dr. Tunahan Hocam,"
+    body: admin-composed text (plain text with newlines)
+    Returns True if sent successfully.
+    """
+    sender = os.getenv("GMAIL_SENDER_ADDRESS")
+    password = os.getenv("GMAIL_APP_PASSWORD")
+
+    if not sender or not password:
+        logger.error("Gmail credentials not configured")
+        return False
+
+    if not to_email:
+        logger.error("Missing to_email for outreach")
+        return False
+
+    # Convert newlines to <br> for HTML body
+    body_html = body.replace("\n", "<br>")
+
+    html_body = f"""\
+<html>
+<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+    <p style="font-size: 16px;"><strong>{greeting}</strong></p>
+
+    <p>{body_html}</p>
+
+    <p style="text-align: center; margin: 20px 0;">
+        Bizi sosyal medyadan takip edin / Follow us on social media:<br><br>
+        <a href="https://www.linkedin.com/company/rsgturkey/posts/?feedView=all" style="text-decoration: none; display: inline-block; margin: 4px;">
+            <img src="https://cdn-icons-png.flaticon.com/32/3536/3536505.png" alt="LinkedIn" width="32" height="32" style="vertical-align: middle;">
+        </a>
+        <a href="https://www.instagram.com/rsgturkey/" style="text-decoration: none; display: inline-block; margin: 4px;">
+            <img src="https://cdn-icons-png.flaticon.com/32/2111/2111463.png" alt="Instagram" width="32" height="32" style="vertical-align: middle;">
+        </a>
+        <a href="https://x.com/RSGTurkey" style="text-decoration: none; display: inline-block; margin: 4px;">
+            <img src="https://cdn-icons-png.flaticon.com/32/5968/5968830.png" alt="X" width="32" height="32" style="vertical-align: middle;">
+        </a>
+        <a href="https://www.youtube.com/channel/UCRM_72rELTgtWK_zKlDGxxQ" style="text-decoration: none; display: inline-block; margin: 4px;">
+            <img src="https://cdn-icons-png.flaticon.com/32/1384/1384060.png" alt="YouTube" width="32" height="32" style="vertical-align: middle;">
+        </a>
+    </p>
+
+    <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
+    <p style="color: #666; font-size: 12px;">ISCB-SC RSG-T&uuml;rkiye</p>
+</body>
+</html>"""
+
+    text_body = f"""{greeting}
+
+{body}
+
+---
+Bizi sosyal medyadan takip edin / Follow us on social media:
+LinkedIn: https://www.linkedin.com/company/rsgturkey/posts/?feedView=all
+Instagram: https://www.instagram.com/rsgturkey/
+X (Twitter): https://x.com/RSGTurkey
+YouTube: https://www.youtube.com/channel/UCRM_72rELTgtWK_zKlDGxxQ
+
+ISCB-SC RSG-Türkiye"""
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = to_email
+
+    msg.attach(MIMEText(text_body, "plain"))
+    msg.attach(MIMEText(html_body, "html"))
+
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(sender, password)
+            server.sendmail(sender, to_email, msg.as_string())
+
+        logger.info(f"Outreach email sent to {to_email}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to send outreach email to {to_email}: {e}")
+        return False
