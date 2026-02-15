@@ -156,6 +156,39 @@ def init_db():
             )
         """)
 
+        # Outreach campaigns table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS outreach_campaigns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                audience_type TEXT NOT NULL CHECK(audience_type IN ('academics', 'clubs')),
+                subject TEXT NOT NULL,
+                body TEXT NOT NULL,
+                sender_user_id TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                total_recipients INTEGER DEFAULT 0,
+                sent_count INTEGER DEFAULT 0,
+                failed_count INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'draft' CHECK(status IN ('draft', 'sending', 'completed', 'failed', 'cancelled')),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP
+            )
+        """)
+
+        # Outreach recipients table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS outreach_recipients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                campaign_id INTEGER NOT NULL,
+                email TEXT NOT NULL,
+                name TEXT,
+                greeting TEXT NOT NULL,
+                status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed')),
+                sent_at TIMESTAMP,
+                error_message TEXT,
+                FOREIGN KEY (campaign_id) REFERENCES outreach_campaigns(id) ON DELETE CASCADE
+            )
+        """)
+
         # Indexes for faster lookups
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_options_poll ON options(poll_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_votes_poll ON votes(poll_id)")
@@ -167,6 +200,9 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_datetime ON events(event_datetime)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_rsvps_event ON rsvps(event_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_rsvps_user ON rsvps(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_outreach_recipients_campaign ON outreach_recipients(campaign_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_outreach_recipients_status ON outreach_recipients(status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_outreach_campaigns_status ON outreach_campaigns(status)")
 
 
 def create_poll(question: str, creator_id: str, channel_id: str,
@@ -762,6 +798,161 @@ def get_upcoming_events(limit: int = 10) -> list[dict]:
             WHERE status = 'open'
             AND event_datetime > datetime('now')
             ORDER BY event_datetime ASC
+            LIMIT ?
+        """, (limit,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+# ============================================================================
+# OUTREACH FUNCTIONS
+# ============================================================================
+
+def create_outreach_campaign(audience_type: str, subject: str, body: str,
+                              sender_user_id: str, channel_id: str) -> int:
+    """Create a new outreach campaign. Returns the campaign ID."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO outreach_campaigns
+                (audience_type, subject, body, sender_user_id, channel_id)
+            VALUES (?, ?, ?, ?, ?)
+        """, (audience_type, subject, body, sender_user_id, channel_id))
+        return cursor.lastrowid
+
+
+def add_outreach_recipients(campaign_id: int, recipients: list[dict]):
+    """Bulk insert recipients and update campaign total count.
+    Each recipient dict: {email, name, greeting}
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        for r in recipients:
+            cursor.execute("""
+                INSERT INTO outreach_recipients (campaign_id, email, name, greeting)
+                VALUES (?, ?, ?, ?)
+            """, (campaign_id, r["email"], r.get("name", ""), r["greeting"]))
+        cursor.execute(
+            "UPDATE outreach_campaigns SET total_recipients = ? WHERE id = ?",
+            (len(recipients), campaign_id)
+        )
+
+
+def get_outreach_campaign(campaign_id: int) -> Optional[dict]:
+    """Get an outreach campaign by ID."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM outreach_campaigns WHERE id = ?", (campaign_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def get_outreach_recipients(campaign_id: int) -> list[dict]:
+    """Get all recipients for a campaign."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM outreach_recipients
+            WHERE campaign_id = ?
+            ORDER BY id
+        """, (campaign_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_pending_outreach_recipients(campaign_id: int) -> list[dict]:
+    """Get all pending recipients for a campaign."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM outreach_recipients
+            WHERE campaign_id = ? AND status = 'pending'
+            ORDER BY id
+        """, (campaign_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def mark_outreach_recipient_sent(recipient_id: int):
+    """Mark a recipient as successfully sent."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE outreach_recipients
+            SET status = 'sent', sent_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (recipient_id,))
+
+
+def mark_outreach_recipient_failed(recipient_id: int, error: str):
+    """Mark a recipient as failed with error message."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE outreach_recipients
+            SET status = 'failed', error_message = ?
+            WHERE id = ?
+        """, (error, recipient_id))
+
+
+def update_outreach_campaign_counts(campaign_id: int):
+    """Recalculate sent/failed counts from recipients table."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+            FROM outreach_recipients WHERE campaign_id = ?
+        """, (campaign_id,))
+        row = cursor.fetchone()
+        cursor.execute("""
+            UPDATE outreach_campaigns
+            SET sent_count = ?, failed_count = ?
+            WHERE id = ?
+        """, (row["sent"] or 0, row["failed"] or 0, campaign_id))
+
+
+def update_outreach_campaign_status(campaign_id: int, status: str,
+                                     completed: bool = False):
+    """Update a campaign's status. Optionally set completed_at."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        if completed:
+            cursor.execute("""
+                UPDATE outreach_campaigns
+                SET status = ?, completed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (status, campaign_id))
+        else:
+            cursor.execute(
+                "UPDATE outreach_campaigns SET status = ? WHERE id = ?",
+                (status, campaign_id)
+            )
+
+
+def get_outreach_stats() -> dict:
+    """Get aggregate outreach statistics."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total_campaigns,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status = 'sending' THEN 1 ELSE 0 END) as in_progress,
+                SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) as cancelled,
+                SUM(sent_count) as total_sent,
+                SUM(failed_count) as total_failed
+            FROM outreach_campaigns
+        """)
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+
+
+def get_recent_outreach_campaigns(limit: int = 10) -> list[dict]:
+    """Get recent outreach campaigns ordered by creation date."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM outreach_campaigns
+            ORDER BY created_at DESC
             LIMIT ?
         """, (limit,))
         return [dict(row) for row in cursor.fetchall()]
