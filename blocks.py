@@ -722,3 +722,303 @@ def build_event_closed_message(event_id: int, title: str, description: str,
         max_attendees=max_attendees,
         status="closed"
     )
+
+
+# ============================================================================
+# OUTREACH BLOCK BUILDERS
+# ============================================================================
+
+def build_outreach_compose_modal(audience_type: str) -> dict:
+    """Build the modal for composing an outreach email campaign."""
+    if audience_type == "academics":
+        greeting_hint = "Auto-greeting: \"Say\u0131n {Ad Soyad} Hocam,\""
+    else:
+        greeting_hint = "Auto-greeting: \"Sevgili {Kul\u00fcp Ad\u0131},\""
+
+    return {
+        "type": "modal",
+        "callback_id": "outreach_compose_modal",
+        "title": {"type": "plain_text", "text": "Compose Outreach"},
+        "submit": {"type": "plain_text", "text": "Preview"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "private_metadata": "",
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "audience_block",
+                "element": {
+                    "type": "static_select",
+                    "action_id": "audience_select",
+                    "initial_option": {
+                        "text": {"type": "plain_text", "text": "Academics" if audience_type == "academics" else "Clubs"},
+                        "value": audience_type
+                    },
+                    "options": [
+                        {
+                            "text": {"type": "plain_text", "text": "Academics"},
+                            "value": "academics"
+                        },
+                        {
+                            "text": {"type": "plain_text", "text": "Clubs"},
+                            "value": "clubs"
+                        }
+                    ]
+                },
+                "label": {"type": "plain_text", "text": "Audience"}
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": f":envelope: {greeting_hint}"}
+                ]
+            },
+            {
+                "type": "input",
+                "block_id": "subject_block",
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "subject_input",
+                    "placeholder": {"type": "plain_text", "text": "Email subject line"},
+                    "max_length": 200
+                },
+                "label": {"type": "plain_text", "text": "Subject"}
+            },
+            {
+                "type": "input",
+                "block_id": "body_block",
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "body_input",
+                    "multiline": True,
+                    "placeholder": {"type": "plain_text", "text": "Email body (greeting is auto-prepended)"},
+                    "max_length": 3000
+                },
+                "label": {"type": "plain_text", "text": "Body"}
+            }
+        ]
+    }
+
+
+def build_outreach_preview_blocks(campaign_id: int, audience_type: str,
+                                   subject: str, samples: list[dict],
+                                   total: int) -> list[dict]:
+    """Build ephemeral preview blocks with sample emails and confirm/cancel buttons."""
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": ":email: Outreach Preview", "emoji": True}
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f"*Audience:* {audience_type.title()} | *Recipients:* {total} | *Subject:* {subject}"}
+            ]
+        },
+        {"type": "divider"}
+    ]
+
+    if total > 450:
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": ":warning: *Warning:* More than 450 recipients. Gmail's daily send limit is ~500. The campaign may not complete in one day."
+            }
+        })
+        blocks.append({"type": "divider"})
+
+    # Show sample emails
+    for i, sample in enumerate(samples[:3], 1):
+        preview_body = sample.get("body_preview", "")
+        if len(preview_body) > 200:
+            preview_body = preview_body[:200] + "..."
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Sample {i}:* `{sample['email']}`\n>{sample['greeting']}\n>{preview_body}"
+            }
+        })
+
+    blocks.append({"type": "divider"})
+
+    blocks.append({
+        "type": "actions",
+        "block_id": f"outreach_actions_{campaign_id}",
+        "elements": [
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": ":white_check_mark: Confirm Send", "emoji": True},
+                "action_id": f"outreach_confirm_{campaign_id}",
+                "value": str(campaign_id),
+                "style": "primary"
+            },
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": ":x: Cancel", "emoji": True},
+                "action_id": f"outreach_cancel_{campaign_id}",
+                "value": str(campaign_id),
+                "style": "danger"
+            }
+        ]
+    })
+
+    return blocks
+
+
+def build_outreach_status_blocks(stats: dict) -> list[dict]:
+    """Build outreach statistics display."""
+    total = stats.get("total_campaigns", 0) or 0
+    completed = stats.get("completed", 0) or 0
+    in_progress = stats.get("in_progress", 0) or 0
+    cancelled = stats.get("cancelled", 0) or 0
+    total_sent = stats.get("total_sent", 0) or 0
+    total_failed = stats.get("total_failed", 0) or 0
+
+    return [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": ":bar_chart: Outreach Statistics", "emoji": True}
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*Total campaigns:* {total}\n"
+                    f"*Completed:* {completed}\n"
+                    f"*In progress:* {in_progress}\n"
+                    f"*Cancelled:* {cancelled}\n"
+                    f"*Total emails sent:* {total_sent}\n"
+                    f"*Total failures:* {total_failed}"
+                )
+            }
+        }
+    ]
+
+
+def build_outreach_history_blocks(campaigns: list[dict]) -> list[dict]:
+    """Build recent outreach campaigns list."""
+    if not campaigns:
+        return [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "No outreach campaigns yet. Use `/outreach academics` or `/outreach clubs` to start one."}
+            }
+        ]
+
+    status_emoji = {
+        "draft": ":pencil2:",
+        "sending": ":hourglass_flowing_sand:",
+        "completed": ":white_check_mark:",
+        "failed": ":x:",
+        "cancelled": ":no_entry_sign:"
+    }
+
+    result_blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": ":scroll: Recent Outreach Campaigns", "emoji": True}
+        }
+    ]
+
+    for c in campaigns:
+        emoji = status_emoji.get(c["status"], ":question:")
+        created = c.get("created_at", "")[:16] if c.get("created_at") else "?"
+        result_blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"{emoji} *{c['subject']}*\n"
+                    f"_{c['audience_type'].title()}_ | "
+                    f"{c['sent_count']}/{c['total_recipients']} sent | "
+                    f"{c['status']} | {created}"
+                )
+            },
+            "accessory": {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Details", "emoji": True},
+                "action_id": f"outreach_details_{c['id']}",
+                "value": str(c["id"])
+            }
+        })
+
+    return result_blocks
+
+
+def build_outreach_detail_blocks(campaign: dict, recipients: list[dict]) -> list[dict]:
+    """Build detailed view of a single outreach campaign."""
+    status_emoji = {
+        "draft": ":pencil2:",
+        "sending": ":hourglass_flowing_sand:",
+        "completed": ":white_check_mark:",
+        "failed": ":x:",
+        "cancelled": ":no_entry_sign:"
+    }
+
+    emoji = status_emoji.get(campaign["status"], ":question:")
+    created = campaign.get("created_at", "")[:16] if campaign.get("created_at") else "?"
+
+    result_blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"{campaign['subject']}", "emoji": True}
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": (
+                    f"{emoji} {campaign['status'].title()} | "
+                    f"_{campaign['audience_type'].title()}_ | "
+                    f"Sent by <@{campaign['sender_user_id']}> | {created}"
+                )}
+            ]
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Email body:*\n>>>{campaign['body']}"
+            }
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*Recipients ({campaign['sent_count']}/{campaign['total_recipients']} sent, {campaign['failed_count']} failed):*"
+            }
+        }
+    ]
+
+    recipient_emoji = {"sent": ":white_check_mark:", "failed": ":x:", "pending": ":hourglass:"}
+
+    # Show recipients in batches to stay under Slack's block limit
+    lines = []
+    for r in recipients:
+        r_emoji = recipient_emoji.get(r["status"], ":question:")
+        line = f"{r_emoji} {r['name']} — `{r['email']}`"
+        if r.get("error_message"):
+            line += f" — _{r['error_message']}_"
+        lines.append(line)
+
+    # Slack limits section text to 3000 chars, split if needed
+    chunk = ""
+    for line in lines:
+        if len(chunk) + len(line) + 1 > 2900:
+            result_blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": chunk}
+            })
+            chunk = ""
+        chunk += line + "\n"
+
+    if chunk:
+        result_blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": chunk}
+        })
+
+    return result_blocks
