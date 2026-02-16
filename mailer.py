@@ -34,35 +34,75 @@ def send_welcome_email(to_email: str, first_name: str, last_name: str,
 
     name = f"{first_name} {last_name}".strip() or "Member"
     display_first = first_name or "there"
+    calendar_link = os.getenv("CALENDAR_LINK", "")
 
     subject = "RSG-Türkiye'ye Hoş Geldiniz! / Welcome to RSG-Türkiye!"
+
+    # Calendar section (only if link is configured)
+    calendar_html_tr = ""
+    calendar_html_en = ""
+    calendar_text_tr = ""
+    calendar_text_en = ""
+    if calendar_link:
+        calendar_html_tr = f"""
+    <p>Dilerseniz etkinlik takvimimizi kendi takviminize de buradan entegre edebilirsiniz:</p>
+    <p style="text-align: center; margin: 20px 0;">
+        <a href="{calendar_link}"
+           style="background-color: #0B8043; color: white; padding: 10px 22px;
+                  text-decoration: none; border-radius: 6px; font-size: 14px;
+                  font-weight: bold; display: inline-block;">
+            &#128197; RSG-T&uuml;rkiye Etkinlik Takvimi
+        </a>
+    </p>"""
+        calendar_html_en = f"""
+    <p>You can also integrate our event calendar into your own calendar:</p>
+    <p style="text-align: center; margin: 20px 0;">
+        <a href="{calendar_link}"
+           style="background-color: #0B8043; color: white; padding: 10px 22px;
+                  text-decoration: none; border-radius: 6px; font-size: 14px;
+                  font-weight: bold; display: inline-block;">
+            &#128197; RSG-T&uuml;rkiye Event Calendar
+        </a>
+    </p>"""
+        calendar_text_tr = f"\nEtkinlik takvimimizi kendi takviminize entegre edebilirsiniz:\n{calendar_link}\n"
+        calendar_text_en = f"\nIntegrate our event calendar into yours:\n{calendar_link}\n"
 
     html_body = f"""\
 <html>
 <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-    <h2>Merhabalar!</h2>
+    <h2>Merhabalar! &#10024;</h2>
 
-    <p>Sizlere yakın zamanda ISCB-SC RSG-T&uuml;rkiye katılım formunu doldurduğunuz i&ccedil;in yazıyoruz.</p>
+    <p>ISCB-SC RSG-T&uuml;rkiye'ye g&ouml;sterdiğin ilgi i&ccedil;in teşekk&uuml;r ederiz. Hesaplamalı biyoloji alanında T&uuml;rkiye'deki en k&ouml;kl&uuml; &ouml;ğrenci topluluklarından biri olarak, seni de aramızda g&ouml;rmekten mutluluk duyuyoruz!</p>
 
-    <p>Kısaca grubumuzu tanıtmak istiyoruz ve ayrıca varsa sorularınızı yanıtlamak bizleri mutlu eder.</p>
+    <p>RSG-T&uuml;rkiye, International Society for Computational Biology (ISCB) Student Council'e bağlı, &ouml;ğrenci ve erken kariyer araştırmacılarını bir araya getiren g&ouml;n&uuml;ll&uuml; bir platformdur. Amacımız, bu alandaki bilgi birikimini paylaşmak ve camiamızı g&uuml;&ccedil;lendirmektir. &#129309;</p>
 
-    <p>ISCB-SC'ye (International Society for Computational Biology, Uluslararası Hesaplamalı Biyoloji Derneği; Student Council, &Ouml;ğrenci Konseyi) bağlı b&ouml;lgesel &ouml;ğrenci grubuyuz (Regional Student Group, RSG) ve RSG-T&uuml;rkiye olarak 2011 yılında kurulduk. Başlıca aktivitelerimiz d&uuml;zenlediğimiz &ouml;ğrenci sempozyumlarımız ve hem T&uuml;rkiye'den hem de yurtdışında tanınmış bilim insanlarını &uuml;cretsiz olarak T&uuml;rkiye hesaplamalı biyoloji camiası ile buluşturduğumuz webinar'larımızdır.</p>
+    <h3>RSG-T&uuml;rkiye'de seni neler bekliyor? &#128640;</h3>
 
-    <p>Genel haberleşme, etkinlik ve organizasyon duyuruları ile birlikte toplantı g&uuml;nlerimizi paylaştığımız ve aktif bir şekilde kullandığımız Slack kanalımıza sizi bekliyoruz:</p>
+    <p>Biz, 2011 yılından beri hiyerarşiden uzak, tamamen g&ouml;n&uuml;ll&uuml;l&uuml;k esasıyla &uuml;reten ve birbirini destekleyen bir &ouml;ğrenci topluluğuyuz. Burada sadece etkinlik izlemez, aynı zamanda:</p>
+
+    <ul>
+        <li>&Ouml;ğrenci Sempozyumları ve Webinar'larda yer alabilir,</li>
+        <li>&Ouml;ğrenci Sunumları ile akademik becerilerini geliştirebilir,</li>
+        <li>T&uuml;rkiye ve d&uuml;nyadan bilim insanlarıyla tanışma fırsatı yakalayabilir,</li>
+        <li>Biyoenformatik d&uuml;nyasındaki g&uuml;ncel ilanlardan (MSc/PhD/PostDoc) anında haberdar olabilirsin.</li>
+    </ul>
+
+    <h3>İletişim ve Takip &#128241;</h3>
+
+    <p>Genel iletişim, etkinlik duyuruları ve toplantı bilgilerimizi paylaştığımız Slack kanalımıza seni de bekliyoruz. Katıldığında, formda se&ccedil;miş olduğun komite kanallarına otomatik olarak ekleneceksin.</p>
 
     <p style="text-align: center; margin: 30px 0;">
         <a href="{invite_link}"
            style="background-color: #4A154B; color: white; padding: 14px 28px;
                   text-decoration: none; border-radius: 6px; font-size: 16px;
                   font-weight: bold; display: inline-block;">
-            Slack Kanalına Katıl / Join Slack
+            &#128172; Slack Kanalına Katıl / Join Slack
         </a>
     </p>
-
-    <p>Katıldığınızda se&ccedil;tiğiniz komite kanallarına otomatik olarak ekleneceksiniz. Eğer link ile ilgili bir sorun yaşarsanız bu e-postaya geri d&ouml;n&uuml;ş yapabilirsiniz.</p>
+{calendar_html_tr}
+    <p>Bizi sosyal medya &uuml;zerinden takip ederek g&uuml;ncel ilan ve duyurulardan haberdar olabilirsin:</p>
 
     <p style="text-align: center; margin: 20px 0;">
-        Bizi sosyal medyadan takip edin:<br><br>
         <a href="https://www.linkedin.com/company/rsgturkey/posts/?feedView=all" style="text-decoration: none; display: inline-block; margin: 4px;">
             <img src="https://cdn-icons-png.flaticon.com/32/3536/3536505.png" alt="LinkedIn" width="32" height="32" style="vertical-align: middle;">
         </a>
@@ -76,30 +116,44 @@ def send_welcome_email(to_email: str, first_name: str, last_name: str,
             <img src="https://cdn-icons-png.flaticon.com/32/1384/1384060.png" alt="YouTube" width="32" height="32" style="vertical-align: middle;">
         </a>
     </p>
+
+    <p>Herhangi bir sorunuz olursa l&uuml;tfen &ccedil;ekinmeden bizimle iletişime ge&ccedil;in. Sizlerle birlikte &ccedil;alışmak ve daha g&uuml;zel etkinlikler &uuml;retmek i&ccedil;in &ccedil;ok heyecanlıyız! &#127775;</p>
 
     <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
 
-    <h2>Hello!</h2>
+    <h2>Hello! &#10024;</h2>
 
-    <p>We are writing to you because you recently filled out the ISCB-SC RSG-T&uuml;rkiye registration form.</p>
+    <p>Thank you for your interest in ISCB-SC RSG-T&uuml;rkiye. As one of the most established student communities in computational biology in Turkey, we are delighted to have you among us!</p>
 
-    <p>We are a regional student group (RSG) affiliated with ISCB-SC (International Society for Computational Biology, Student Council) and were established in 2011. Our main activities are student symposiums and webinars where we bring well-known scientists from Turkey and abroad to the Turkish computational biology community, free of charge.</p>
+    <p>RSG-T&uuml;rkiye is a volunteer platform affiliated with the International Society for Computational Biology (ISCB) Student Council, bringing together students and early-career researchers. Our goal is to share knowledge in this field and strengthen our community. &#129309;</p>
 
-    <p>We use Slack for general communication, event announcements, and meeting schedules. We would love to have you join us:</p>
+    <h3>What awaits you at RSG-T&uuml;rkiye? &#128640;</h3>
+
+    <p>Since 2011, we have been a non-hierarchical student community built entirely on volunteerism, creating and supporting one another. Here, you don't just attend events &mdash; you can also:</p>
+
+    <ul>
+        <li>Participate in Student Symposiums and Webinars,</li>
+        <li>Develop your academic skills through Student Presentations,</li>
+        <li>Meet scientists from Turkey and around the world,</li>
+        <li>Stay instantly informed about current positions (MSc/PhD/PostDoc) in bioinformatics.</li>
+    </ul>
+
+    <h3>Communication &amp; Updates &#128241;</h3>
+
+    <p>We use Slack for general communication, event announcements, and meeting schedules. Once you join, you'll be automatically added to the committee channels you selected in the registration form.</p>
 
     <p style="text-align: center; margin: 30px 0;">
         <a href="{invite_link}"
            style="background-color: #4A154B; color: white; padding: 14px 28px;
                   text-decoration: none; border-radius: 6px; font-size: 16px;
                   font-weight: bold; display: inline-block;">
-            Join Slack Workspace
+            &#128172; Join Slack Workspace
         </a>
     </p>
-
-    <p>Once you join, you'll be automatically added to your selected committee channels. If you have any issues with the link, feel free to reply to this email.</p>
+{calendar_html_en}
+    <p>Follow us on social media to stay up to date with announcements and opportunities:</p>
 
     <p style="text-align: center; margin: 20px 0;">
-        Follow us on social media:<br><br>
         <a href="https://www.linkedin.com/company/rsgturkey/posts/?feedView=all" style="text-decoration: none; display: inline-block; margin: 4px;">
             <img src="https://cdn-icons-png.flaticon.com/32/3536/3536505.png" alt="LinkedIn" width="32" height="32" style="vertical-align: middle;">
         </a>
@@ -114,7 +168,9 @@ def send_welcome_email(to_email: str, first_name: str, last_name: str,
         </a>
     </p>
 
-    <p>İyi g&uuml;nler diliyoruz! / Have a nice day! 🌟</p>
+    <p>If you have any questions, please don't hesitate to reach out. We are very excited to work with you and create great events together! &#127775;</p>
+
+    <p>İyi &ccedil;alışmalar dileriz. / Best regards.</p>
 
     <p>ISCB-SC RSG-T&uuml;rkiye Ekibi adına / On behalf of the ISCB-SC RSG-T&uuml;rkiye Team</p>
 </body>
@@ -123,45 +179,65 @@ def send_welcome_email(to_email: str, first_name: str, last_name: str,
     text_body = f"""\
 Merhabalar!
 
-Sizlere yakın zamanda ISCB-SC RSG-Türkiye katılım formunu doldurduğunuz için yazıyoruz.
+ISCB-SC RSG-Türkiye'ye gösterdiğin ilgi için teşekkür ederiz. Hesaplamalı biyoloji alanında Türkiye'deki en köklü öğrenci topluluklarından biri olarak, seni de aramızda görmekten mutluluk duyuyoruz!
 
-Kısaca grubumuzu tanıtmak istiyoruz ve ayrıca varsa sorularınızı yanıtlamak bizleri mutlu eder.
+RSG-Türkiye, International Society for Computational Biology (ISCB) Student Council'e bağlı, öğrenci ve erken kariyer araştırmacılarını bir araya getiren gönüllü bir platformdur. Amacımız, bu alandaki bilgi birikimini paylaşmak ve camiamızı güçlendirmektir.
 
-ISCB-SC'ye (International Society for Computational Biology, Uluslararası Hesaplamalı Biyoloji Derneği; Student Council, Öğrenci Konseyi) bağlı bölgesel öğrenci grubuyuz (Regional Student Group, RSG) ve RSG-Türkiye olarak 2011 yılında kurulduk. Başlıca aktivitelerimiz düzenlediğimiz öğrenci sempozyumlarımız ve hem Türkiye'den hem de yurtdışında tanınmış bilim insanlarını ücretsiz olarak Türkiye hesaplamalı biyoloji camiası ile buluşturduğumuz webinar'larımızdır.
+RSG-Türkiye'de seni neler bekliyor?
 
-Genel haberleşme, etkinlik ve organizasyon duyuruları ile birlikte toplantı günlerimizi paylaştığımız Slack kanalımıza sizi bekliyoruz:
+Biz, 2011 yılından beri hiyerarşiden uzak, tamamen gönüllülük esasıyla üreten ve birbirini destekleyen bir öğrenci topluluğuyuz. Burada sadece etkinlik izlemez, aynı zamanda:
 
-{invite_link}
+- Öğrenci Sempozyumları ve Webinar'larda yer alabilir,
+- Öğrenci Sunumları ile akademik becerilerini geliştirebilir,
+- Türkiye ve dünyadan bilim insanlarıyla tanışma fırsatı yakalayabilir,
+- Biyoenformatik dünyasındaki güncel ilanlardan (MSc/PhD/PostDoc) anında haberdar olabilirsin.
 
-Katıldığınızda seçtiğiniz komite kanallarına otomatik olarak ekleneceksiniz. Eğer link ile ilgili bir sorun yaşarsanız bu e-postaya geri dönüş yapabilirsiniz.
+İletişim ve Takip
 
+Genel iletişim, etkinlik duyuruları ve toplantı bilgilerimizi paylaştığımız Slack kanalımıza seni de bekliyoruz. Katıldığında, formda seçmiş olduğun komite kanallarına otomatik olarak ekleneceksin.
+
+Slack Kanalına Katıl: {invite_link}
+{calendar_text_tr}
 Bizi sosyal medyadan takip edin:
 LinkedIn: https://www.linkedin.com/company/rsgturkey/posts/?feedView=all
 Instagram: https://www.instagram.com/rsgturkey/
 X (Twitter): https://x.com/RSGTurkey
 YouTube: https://www.youtube.com/channel/UCRM_72rELTgtWK_zKlDGxxQ
 
+Herhangi bir sorunuz olursa lütfen çekinmeden bizimle iletişime geçin. Sizlerle birlikte çalışmak ve daha güzel etkinlikler üretmek için çok heyecanlıyız!
+
 ---
 
 Hello!
 
-We are writing to you because you recently filled out the ISCB-SC RSG-Türkiye registration form.
+Thank you for your interest in ISCB-SC RSG-Türkiye. As one of the most established student communities in computational biology in Turkey, we are delighted to have you among us!
 
-We are a regional student group (RSG) affiliated with ISCB-SC and were established in 2011. Our main activities are student symposiums and webinars where we bring well-known scientists from Turkey and abroad to the Turkish computational biology community, free of charge.
+RSG-Türkiye is a volunteer platform affiliated with the International Society for Computational Biology (ISCB) Student Council, bringing together students and early-career researchers. Our goal is to share knowledge in this field and strengthen our community.
 
-We use Slack for general communication, event announcements, and meeting schedules. Please join us:
+What awaits you at RSG-Türkiye?
 
-{invite_link}
+Since 2011, we have been a non-hierarchical student community built entirely on volunteerism, creating and supporting one another. Here, you don't just attend events — you can also:
 
-Once you join, you'll be automatically added to your selected committee channels. If you have any issues with the link, feel free to reply to this email.
+- Participate in Student Symposiums and Webinars,
+- Develop your academic skills through Student Presentations,
+- Meet scientists from Turkey and around the world,
+- Stay instantly informed about current positions (MSc/PhD/PostDoc) in bioinformatics.
 
-Bizi sosyal medyadan takip edin / Follow us on social media:
+Communication & Updates
+
+We use Slack for general communication, event announcements, and meeting schedules. Once you join, you'll be automatically added to the committee channels you selected in the registration form.
+
+Join Slack: {invite_link}
+{calendar_text_en}
+Follow us on social media:
 LinkedIn: https://www.linkedin.com/company/rsgturkey/posts/?feedView=all
 Instagram: https://www.instagram.com/rsgturkey/
 X (Twitter): https://x.com/RSGTurkey
 YouTube: https://www.youtube.com/channel/UCRM_72rELTgtWK_zKlDGxxQ
 
-Iyi gunler diliyoruz! / Have a nice day!
+If you have any questions, please don't hesitate to reach out. We are very excited to work with you and create great events together!
+
+Best regards,
 
 ISCB-SC RSG-Türkiye Ekibi adına / On behalf of the ISCB-SC RSG-Türkiye Team"""
 
