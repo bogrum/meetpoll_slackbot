@@ -930,7 +930,7 @@ def build_outreach_history_blocks(campaigns: list[dict]) -> list[dict]:
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    f"{emoji} *{c['subject']}*\n"
+                    f"{emoji} *#{c['id']}* — {c['subject']}\n"
                     f"_{c['audience_type'].title()}_ | "
                     f"{c['sent_count']}/{c['total_recipients']} sent | "
                     f"{c['status']} | {created}"
