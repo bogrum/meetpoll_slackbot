@@ -267,6 +267,7 @@ ONBOARD_AFTER_DATE=
 | `GMAIL_SENDER_ADDRESS` | Gmail address used to send welcome emails |
 | `GMAIL_APP_PASSWORD` | 16-character Gmail App Password |
 | `SLACK_INVITE_LINK` | Workspace invite link (get it from Slack: workspace menu > Invite people) |
+| `CALENDAR_LINK` | Optional Google Calendar link for event calendar integration (leave empty to skip) |
 | `WELCOME_METHOD` | `email` (send email only), `slack_dm` (DM only), or `both` |
 | `ONBOARD_AFTER_DATE` | Optional cutoff date (e.g., `2026-02-01`). Entries before this date are ignored. Leave empty to process all. |
 | `ONBOARD_SUPER_ADMIN` | Your Slack Member ID (get it from your Slack profile > "..." > Copy member ID). This user can manage onboard admins and cannot be removed. |
@@ -452,6 +453,7 @@ RSVP buttons appear on the event message: **Going**, **Maybe**, **Not Going**. I
 | `/outreach clubs` | Compose and send personalized emails to student clubs |
 | `/outreach status` | Show aggregate outreach statistics |
 | `/outreach history` | Show recent campaigns with expandable details |
+| `/outreach send <id> email1, email2` | Resend a campaign to specific email addresses |
 
 **Outreach flow:**
 1. Run `/outreach academics` (or `clubs`) — a compose modal opens
@@ -460,7 +462,14 @@ RSVP buttons appear on the event message: **Going**, **Maybe**, **Not Going**. I
 4. Click **Confirm Send** — emails are sent in the background with 2.5s rate limiting
 5. Progress updates are posted to the channel every 10 emails
 
-**Google Sheets setup:** Create a sheet with academic contacts (columns: `Ünvan`, `Ad Soyad`, `E-posta`, `Üniversite`, etc.) or club contacts (columns: `Kulüp Adı`, `İletişim Kişisi`, `Email`). Share each sheet with the service account email as Viewer.
+**Manual resend:** Use `/outreach send <campaign_id> email1@x.com, email2@x.com` to resend a past campaign to specific addresses. Accepts comma-separated or space-separated emails. Greetings are looked up from the Google Sheet automatically.
+
+**Google Sheets setup:**
+
+- **Academics sheet** columns: `Ünvan`, `Ad Soyad` (or separate `Ad`/`Soyad`), `E-posta`, `Üniversite`
+- **Clubs sheet** columns: `Üniversite`, `Kulüp Adı`, `İletişim E-postası`, `Instagram / Sosyal Medya`, `Alan`, `Notlar`
+
+Share each sheet with the service account email as Viewer. Sheets must be native Google Sheets (not uploaded `.xlsx` files).
 
 ### Automatic Background Jobs
 
