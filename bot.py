@@ -525,6 +525,15 @@ def handle_outreach_command(ack, body, client, logger):
             blocks=history_blocks, text="Recent outreach campaigns"
         )
 
+    elif text.startswith("send "):
+        if not _is_onboard_authorized(user_id):
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=":no_entry: You don't have permission to use `/outreach` commands."
+            )
+            return
+        _handle_outreach_send(text[5:].strip(), channel_id, user_id, client)
+
     else:
         client.chat_postEphemeral(
             channel=channel_id, user=user_id,
@@ -533,7 +542,8 @@ def handle_outreach_command(ack, body, client, logger):
                 "  `/outreach academics` \u2014 compose email to academic contacts\n"
                 "  `/outreach clubs` \u2014 compose email to student clubs\n"
                 "  `/outreach status` \u2014 show outreach statistics\n"
-                "  `/outreach history` \u2014 show recent campaigns"
+                "  `/outreach history` \u2014 show recent campaigns\n"
+                "  `/outreach send <campaign_id> email1 email2 ...` \u2014 resend a campaign to specific addresses"
             )
         )
 
@@ -1098,6 +1108,110 @@ def handle_outreach_cancel(ack, body, client, logger):
             )
     except Exception as e:
         logger.error(f"Error cancelling outreach: {e}")
+
+
+def _handle_outreach_send(args: str, channel_id: str, user_id: str, client):
+    """Send a past campaign to specific email addresses manually."""
+    # Split first word (campaign ID) from the rest
+    first_space = args.find(" ")
+    if first_space == -1:
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":warning: Usage: `/outreach send <campaign_id> email1@x.com, email2@x.com ...`"
+        )
+        return
+
+    id_part = args[:first_space].strip()
+    email_part = args[first_space + 1:].strip()
+
+    try:
+        campaign_id = int(id_part)
+    except ValueError:
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":warning: First argument must be a campaign ID number."
+        )
+        return
+
+    # Strip Slack mailto formatting: <mailto:x@y.com|x@y.com> → x@y.com
+    email_part = re.sub(r'<mailto:([^|>]+)\|[^>]+>', r'\1', email_part)
+    email_part = re.sub(r'<mailto:([^>]+)>', r'\1', email_part)
+
+    # Accept both comma-separated and space-separated
+    raw_emails = re.split(r'[,\s]+', email_part)
+    emails = [e.lower().strip() for e in raw_emails if "@" in e]
+    if not emails:
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":warning: No valid email addresses provided."
+        )
+        return
+
+    campaign = db.get_outreach_campaign(campaign_id)
+    if not campaign:
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=f":warning: Campaign #{campaign_id} not found."
+        )
+        return
+
+    # Fetch contacts from sheet to build greeting lookup by email
+    if campaign["audience_type"] == "academics":
+        contacts = sheets.fetch_outreach_academics()
+    else:
+        contacts = sheets.fetch_outreach_clubs()
+
+    greeting_by_email = {}
+    for c in contacts:
+        email_key = c.get("email", "").lower()
+        if not email_key:
+            continue
+        if campaign["audience_type"] == "academics":
+            full_name = c.get("full_name", "").strip()
+            greeting_by_email[email_key] = f"Sayın {full_name} Hocam," if full_name else "Sayın Hocam,"
+        else:
+            club_name = c.get("club_name", "").strip()
+            greeting_by_email[email_key] = f"Sevgili {club_name}," if club_name else "Sevgili Yetkili,"
+
+    # Send directly in a background thread
+    def _send_manual():
+        sent = 0
+        failed = 0
+        for email in emails:
+            if campaign["audience_type"] == "academics":
+                greeting = greeting_by_email.get(email, "Sayın Hocam,")
+            else:
+                greeting = greeting_by_email.get(email, "Sevgili Yetkili,")
+
+            ok = mailer.send_outreach_email(
+                to_email=email,
+                subject=campaign["subject"],
+                greeting=greeting,
+                body=campaign["body"]
+            )
+            if ok:
+                sent += 1
+            else:
+                failed += 1
+
+            if len(emails) > 1:
+                time.sleep(2.5)
+
+        try:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f":white_check_mark: Manual send for campaign #{campaign_id}: {sent} sent, {failed} failed out of {len(emails)}."
+            )
+        except Exception:
+            pass
+
+    client.chat_postEphemeral(
+        channel=channel_id, user=user_id,
+        text=f":email: Sending campaign #{campaign_id} to {len(emails)} address(es)..."
+    )
+
+    thread = threading.Thread(target=_send_manual, daemon=True)
+    thread.start()
 
 
 def _run_outreach_campaign(campaign_id: int, channel_id: str, client):
