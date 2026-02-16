@@ -261,11 +261,19 @@ def _normalize_club_row(raw: dict) -> dict:
         if not val:
             continue
 
-        if "email" in key_lower:
+        if "email" in key_lower or "e-posta" in key_lower or "eposta" in key_lower:
             normalized["email"] = val.lower()
-        elif key_lower in ("kul\u00fcp ad\u0131", "club name", "club", "kul\u00fcp"):
+        elif key_lower in ("kulüp adı", "club name", "club", "kulüp"):
             normalized["club_name"] = val
-        elif key_lower in ("ileti\u015fim ki\u015fisi", "contact person", "contact", "ki\u015fi"):
+        elif key_lower in ("üniversite", "university", "uni"):
+            normalized["university"] = val
+        elif key_lower in ("alan", "field", "area"):
+            normalized["field"] = val
+        elif "instagram" in key_lower or "sosyal medya" in key_lower or "social media" in key_lower:
+            normalized["social_media"] = val
+        elif key_lower in ("notlar", "notes", "not"):
+            normalized["notes"] = val
+        elif key_lower in ("iletişim kişisi", "contact person", "contact", "kişi"):
             normalized["contact_person"] = val
 
     return normalized
