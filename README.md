@@ -38,6 +38,21 @@ A self-hosted Slack bot for meeting scheduling polls, event management with RSVP
 - `/outreach status` — aggregate statistics
 - `/outreach history` — recent campaigns with expandable details
 
+### Google Groups Auto-Add
+- When a new member is onboarded, automatically adds them to a Google Group via Admin SDK
+- Requires domain-wide delegation (DWD) configured in Google Workspace Admin Console
+- Idempotent — members already in the group are silently skipped
+- Retry logic: members who missed group-add (e.g. during downtime) are retried on next registration check
+- If `GOOGLE_GROUP_EMAIL` is not set, this feature is silently skipped
+
+### Bioinformatics RSS Opportunity Feed
+- Fetches [jobrxiv.org](https://jobrxiv.org) and [opportunitydesk.org](https://opportunitydesk.org) twice daily (10:00 and 22:00)
+- Filters entries by bioinformatics-related keywords (genomics, sequencing, omics, ML, etc.)
+- New items are queued and posted at random times within the 10:00–22:00 window
+- Maximum 5 posts per calendar day, preventing channel spam
+- Each posted item is tracked by GUID — never posted twice
+- Posts to the channel configured via `JOBS_CHANNEL_ID`
+
 ## Prerequisites
 
 - Python 3.8+
@@ -179,6 +194,34 @@ The bot reads new member registrations from a Google Sheet (linked to a Google F
 
 ---
 
+## Part 2b: Google Groups Auto-Add (Optional)
+
+This feature requires a **Google Workspace** account (not a personal `@gmail.com`). If you only have a personal Gmail account, skip this section and leave `GOOGLE_GROUP_EMAIL` empty.
+
+### Step 1: Enable Admin SDK
+
+1. Go to [https://console.cloud.google.com](https://console.cloud.google.com) → your project
+2. Go to **APIs & Services** > **Library**
+3. Search for **"Admin SDK API"** and enable it
+
+### Step 2: Configure Domain-Wide Delegation
+
+1. Go to **Google Workspace Admin Console** → [admin.google.com](https://admin.google.com)
+2. Navigate to **Security** → **API Controls** → **Domain-wide Delegation**
+3. Click **Add new**
+4. Enter your service account's **Client ID** (found in the service account JSON under `client_id`)
+5. Add scope: `https://www.googleapis.com/auth/admin.directory.group.member`
+6. Click **Authorize**
+
+### Step 3: Set Environment Variables
+
+```bash
+GOOGLE_GROUP_EMAIL=members@yourdomain.org   # The Google Group to add members to
+GOOGLE_ADMIN_EMAIL=admin@yourdomain.org     # A Workspace admin email to impersonate
+```
+
+---
+
 ## Part 3: Set Up Gmail for Welcome Emails
 
 The bot sends welcome emails via Gmail SMTP using an App Password.
@@ -275,6 +318,9 @@ ONBOARD_AFTER_DATE=
 | `OUTREACH_ACADEMICS_SHEET_NAME` | Sheet tab name (default: `Sheet1`) |
 | `OUTREACH_CLUBS_SHEET_ID` | Google Sheet ID for student club contacts |
 | `OUTREACH_CLUBS_SHEET_NAME` | Sheet tab name (default: `Sheet1`) |
+| `GOOGLE_GROUP_EMAIL` | Google Group email to auto-add new members to (e.g. `members@yourdomain.org`). Requires DWD. Leave empty to disable. |
+| `GOOGLE_ADMIN_EMAIL` | A Google Workspace admin email to impersonate for domain-wide delegation |
+| `JOBS_CHANNEL_ID` | Slack channel ID where bioinformatics RSS opportunities are posted (e.g. `CQ14TLAGK`) |
 
 ### Raspberry Pi Deployment
 
@@ -307,42 +353,54 @@ pip install -r requirements.txt
 
 ```bash
 # Copy service file
-sudo cp meetpoll.service /etc/systemd/system/
+sudo cp meetpoll.service /etc/systemd/system/slackbot.service
 
 # Adjust the service file if your username isn't 'pi'
-sudo nano /etc/systemd/system/meetpoll.service
+sudo nano /etc/systemd/system/slackbot.service
 
 # Reload systemd and enable service
 sudo systemctl daemon-reload
-sudo systemctl enable meetpoll
-sudo systemctl start meetpoll
+sudo systemctl enable slackbot
+sudo systemctl start slackbot
 
 # Check status
-sudo systemctl status meetpoll
+sudo systemctl status slackbot
 
 # View logs
-sudo journalctl -u meetpoll -f
+sudo journalctl -u slackbot -f
 ```
 
 #### Deploying Updates
 
 From your local machine:
 ```bash
-scp bot.py database.py blocks.py sheets.py mailer.py requirements.txt pi@raspberrypi.local:~/meetpoll/
+scp bot.py database.py blocks.py sheets.py mailer.py google_groups.py rss_feed.py requirements.txt pi@raspberrypi.local:~/meetpoll/
 ```
 
-Then on the Pi:
+Then on the Pi (use the restart-bot script to avoid duplicate processes):
 ```bash
-sudo systemctl restart meetpoll
+sudo restart-bot
+```
+
+To create the restart-bot helper (one-time setup):
+```bash
+sudo nano /usr/local/bin/restart-bot
+# Contents:
+#   #!/bin/bash
+#   systemctl stop slackbot
+#   pkill -9 -f "python bot.py" 2>/dev/null
+#   sleep 2
+#   systemctl start slackbot
+sudo chmod +x /usr/local/bin/restart-bot
 ```
 
 #### Service Management Commands
 
 ```bash
-sudo systemctl stop meetpoll       # Stop the bot
-sudo systemctl restart meetpoll    # Restart the bot
-sudo journalctl -u meetpoll -n 50  # View recent logs
-sudo journalctl -u meetpoll -f     # View live logs
+sudo restart-bot                    # Cleanly restart the bot (recommended)
+sudo systemctl stop slackbot        # Stop the bot
+sudo journalctl -u slackbot -n 50   # View recent logs
+sudo journalctl -u slackbot -f      # View live logs
 ```
 
 ---
@@ -473,12 +531,14 @@ Share each sheet with the service account email as Viewer. Sheets must be native
 
 ### Automatic Background Jobs
 
-| Job | Interval | Description |
+| Job | Schedule | Description |
 |---|---|---|
-| Registration check | Every 1 hour | Checks Google Sheet for new entries, sends welcome emails |
+| Registration check | Every 1 hour | Checks Google Sheet for new entries, sends welcome emails, retries Google Group adds |
 | Event reminders | Every 5 minutes | Sends 24h/1h reminder DMs to RSVPed users |
 | Past event closer | Every 10 minutes | Auto-closes events after their scheduled time |
 | Poll closer | Every 1 minute | Auto-closes polls past their deadline |
+| RSS queue refresh | 10:00 and 22:00 daily | Fetches bioinformatics opportunity feeds, queues new items |
+| RSS opportunity post | Random, 10:00–22:00 | Posts one queued item at a time, max 5 per day |
 
 ---
 
@@ -491,6 +551,8 @@ meetpoll/
 ├── blocks.py             # Slack Block Kit UI builders
 ├── sheets.py             # Google Sheets API client
 ├── mailer.py             # Gmail SMTP email sender
+├── google_groups.py      # Google Groups auto-add via Admin SDK DWD
+├── rss_feed.py           # RSS feed fetcher and bioinformatics keyword filter
 ├── requirements.txt      # Python dependencies
 ├── .env.template         # Environment variables template
 ├── .env                  # Your actual environment file (do not commit)
