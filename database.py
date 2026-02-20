@@ -93,6 +93,7 @@ def init_db():
                 slack_user_id TEXT,
                 channels_assigned INTEGER DEFAULT 0,
                 dm_sent INTEGER DEFAULT 0,
+                group_added INTEGER DEFAULT 0,
                 onboarded INTEGER DEFAULT 0,
                 sheet_timestamp TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -186,6 +187,33 @@ def init_db():
                 sent_at TIMESTAMP,
                 error_message TEXT,
                 FOREIGN KEY (campaign_id) REFERENCES outreach_campaigns(id) ON DELETE CASCADE
+            )
+        """)
+
+        # group_added column migration for existing databases
+        try:
+            cursor.execute("ALTER TABLE processed_members ADD COLUMN group_added INTEGER DEFAULT 0")
+        except Exception:
+            pass  # Column already exists
+
+        # Posted opportunities table (RSS feed dedup)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS posted_opportunities (
+                guid TEXT PRIMARY KEY,
+                title TEXT,
+                link TEXT,
+                posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # Pending opportunities queue (fetched, not yet posted)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pending_opportunities (
+                guid TEXT PRIMARY KEY,
+                title TEXT,
+                link TEXT,
+                summary TEXT,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -956,3 +984,95 @@ def get_recent_outreach_campaigns(limit: int = 10) -> list[dict]:
             LIMIT ?
         """, (limit,))
         return [dict(row) for row in cursor.fetchall()]
+
+
+# ============================================================================
+# GOOGLE GROUPS FUNCTIONS
+# ============================================================================
+
+def mark_group_added(email: str):
+    """Mark that a member has been added to the Google Group."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE processed_members SET group_added = 1 WHERE email = ?",
+            (email.lower(),)
+        )
+
+
+def get_pending_group_members() -> list[dict]:
+    """Get members who received a welcome email but haven't been added to the Google Group yet."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM processed_members
+            WHERE email_sent = 1 AND group_added = 0
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+
+# ============================================================================
+# RSS OPPORTUNITIES FUNCTIONS
+# ============================================================================
+
+def is_opportunity_posted(guid: str) -> bool:
+    """Check if an RSS opportunity has already been posted to Slack."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM posted_opportunities WHERE guid = ?", (guid,))
+        return cursor.fetchone() is not None
+
+
+def mark_opportunity_posted(guid: str, title: str, link: str):
+    """Record that an RSS opportunity has been posted to Slack."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR IGNORE INTO posted_opportunities (guid, title, link)
+            VALUES (?, ?, ?)
+        """, (guid, title, link))
+
+
+def count_opportunities_posted_today() -> int:
+    """Return how many opportunities have been posted today."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT COUNT(*) as cnt FROM posted_opportunities
+            WHERE date(posted_at) = date('now')
+        """)
+        row = cursor.fetchone()
+        return row["cnt"] if row else 0
+
+
+def is_opportunity_pending(guid: str) -> bool:
+    """Check if an opportunity is already in the pending queue."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM pending_opportunities WHERE guid = ?", (guid,))
+        return cursor.fetchone() is not None
+
+
+def add_pending_opportunity(opp: dict):
+    """Add an opportunity to the pending queue."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR IGNORE INTO pending_opportunities (guid, title, link, summary)
+            VALUES (?, ?, ?, ?)
+        """, (opp["guid"], opp["title"], opp["link"], opp.get("summary", "")))
+
+
+def get_pending_opportunities() -> list[dict]:
+    """Get all pending opportunities ordered by when they were added."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM pending_opportunities ORDER BY added_at")
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def remove_pending_opportunity(guid: str):
+    """Remove an opportunity from the pending queue."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM pending_opportunities WHERE guid = ?", (guid,))

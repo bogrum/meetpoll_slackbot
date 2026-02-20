@@ -8,9 +8,10 @@ import os
 import re
 import json
 import time
+import random
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
@@ -20,6 +21,8 @@ import database as db
 import blocks
 import sheets
 import mailer
+import google_groups
+import rss_feed
 
 # Load environment variables
 load_dotenv()
@@ -42,6 +45,12 @@ SLACK_INVITE_LINK = os.getenv("SLACK_INVITE_LINK", "")
 WELCOME_METHOD = os.getenv("WELCOME_METHOD", "email")
 ONBOARD_AFTER_DATE = os.getenv("ONBOARD_AFTER_DATE", "")
 ONBOARD_SUPER_ADMIN = os.getenv("ONBOARD_SUPER_ADMIN", "")
+
+# Google Groups config
+GOOGLE_GROUP_EMAIL = os.getenv("GOOGLE_GROUP_EMAIL", "")
+
+# RSS opportunities config
+JOBS_CHANNEL_ID = os.getenv("JOBS_CHANNEL_ID", "")
 
 
 # ============================================================================
@@ -1562,6 +1571,9 @@ def check_new_registrations() -> int:
                 )
                 if success:
                     db.mark_email_sent(email)
+                    if GOOGLE_GROUP_EMAIL:
+                        if google_groups.add_member_to_group(email):
+                            db.mark_group_added(email)
 
         # Retry failed emails
         pending = db.get_pending_email_members()
@@ -1577,6 +1589,12 @@ def check_new_registrations() -> int:
                     )
                     if success:
                         db.mark_email_sent(member["email"])
+
+        # Retry Google Group adds for members whose email was sent but group add failed/skipped
+        if GOOGLE_GROUP_EMAIL:
+            for member in db.get_pending_group_members():
+                if google_groups.add_member_to_group(member["email"]):
+                    db.mark_group_added(member["email"])
 
     except Exception as e:
         logger.error(f"Error checking new registrations: {e}")
@@ -1665,12 +1683,118 @@ def check_past_events():
         logger.error(f"Error checking past events: {e}")
 
 
+def _post_one_pending_opportunity():
+    """Post the next item from the pending queue to Slack."""
+    if not JOBS_CHANNEL_ID:
+        return
+    try:
+        if db.count_opportunities_posted_today() >= 5:
+            logger.info("Daily RSS opportunity limit (5) reached, skipping post.")
+            return
+
+        pending = db.get_pending_opportunities()
+        if not pending:
+            return
+
+        opp = pending[0]
+        guid = opp["guid"]
+        title = opp["title"]
+        link = opp["link"]
+        summary = opp.get("summary", "")
+        excerpt = summary[:300] + "..." if len(summary) > 300 else summary
+
+        header = f"*<{link}|{title}>*" if link else f"*{title}*"
+        text = f"{header}\n{excerpt}" if excerpt else header
+
+        app.client.chat_postMessage(channel=JOBS_CHANNEL_ID, text=text)
+        db.mark_opportunity_posted(guid, title, link)
+        db.remove_pending_opportunity(guid)
+        logger.info(f"Posted RSS opportunity: {title}")
+
+    except Exception as e:
+        logger.error(f"Error posting pending opportunity: {e}")
+
+
+def _schedule_random_posts():
+    """Schedule random one-off posts in the 10:00-22:00 window for today."""
+    now = datetime.now()
+    window_start = now.replace(hour=10, minute=0, second=0, microsecond=0)
+    window_end = now.replace(hour=22, minute=0, second=0, microsecond=0)
+
+    if now >= window_end:
+        return  # Outside posting window
+
+    # Remove any previously scheduled opportunity posts
+    for job in scheduler.get_jobs():
+        if job.id.startswith("post_opp_slot_"):
+            job.remove()
+
+    remaining_daily = 5 - db.count_opportunities_posted_today()
+    pending = db.get_pending_opportunities()
+    to_schedule = min(remaining_daily, len(pending))
+
+    if to_schedule <= 0:
+        return
+
+    # Spread posts randomly across the remaining window
+    earliest = max(now + timedelta(minutes=5), window_start)
+    available_seconds = int((window_end - earliest).total_seconds())
+    if available_seconds <= 0:
+        return
+
+    post_times = sorted(
+        earliest + timedelta(seconds=random.randint(0, available_seconds))
+        for _ in range(to_schedule)
+    )
+
+    for i, post_time in enumerate(post_times):
+        scheduler.add_job(
+            _post_one_pending_opportunity,
+            "date",
+            run_date=post_time,
+            id=f"post_opp_slot_{i}",
+            replace_existing=True,
+        )
+        logger.info(f"Scheduled RSS post slot {i+1}/{to_schedule} at {post_time.strftime('%H:%M')}")
+
+
+def refresh_rss_queue():
+    """Fetch feeds, update pending queue, and schedule random posts for the day."""
+    if not JOBS_CHANNEL_ID:
+        return
+    try:
+        opportunities = rss_feed.fetch_bioinformatics_opportunities()
+        added = 0
+        for opp in opportunities:
+            guid = opp.get("guid", "")
+            if not guid:
+                continue
+            if db.is_opportunity_posted(guid) or db.is_opportunity_pending(guid):
+                continue
+            db.add_pending_opportunity(opp)
+            added += 1
+        logger.info(f"RSS queue refreshed: {added} new items added to pending queue")
+
+        _schedule_random_posts()
+
+    except Exception as e:
+        logger.error(f"Error refreshing RSS queue: {e}")
+
+
 # ============================================================================
 # MAIN ENTRY POINT
 # ============================================================================
 
 def main():
     """Main function to start the bot."""
+    # Ensure only one instance runs at a time
+    import fcntl
+    lock_file = open("/tmp/slackbot.lock", "w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except IOError:
+        logger.error("Another instance is already running. Exiting.")
+        return
     # Initialize database
     db.init_db()
     logger.info("Database initialized")
@@ -1680,8 +1804,9 @@ def main():
     scheduler.add_job(check_new_registrations, "interval", hours=1)
     scheduler.add_job(check_event_reminders, "interval", minutes=5)
     scheduler.add_job(check_past_events, "interval", minutes=10)
+    scheduler.add_job(refresh_rss_queue, "cron", hour="10,22", minute=0)
     scheduler.start()
-    logger.info("Scheduler started (polls, registrations, events)")
+    logger.info("Scheduler started (polls, registrations, events, RSS opportunities)")
 
     # Get app-level token for Socket Mode
     app_token = os.environ.get("SLACK_APP_TOKEN")

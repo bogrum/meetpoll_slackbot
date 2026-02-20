@@ -9,8 +9,10 @@ Group=raspbog
 WorkingDirectory=/home/raspbog/slackbot/slackbot
 Environment=PATH=/home/raspbog/slackbot/slackbot/venv/bin:/usr/bin
 ExecStart=/home/raspbog/slackbot/slackbot/venv/bin/python bot.py
-Restart=always
+Restart=on-failure
 RestartSec=10
+KillMode=control-group
+TimeoutStopSec=30
 
 # Logging
 StandardOutput=journal
