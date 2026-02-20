@@ -13,13 +13,13 @@ Slack ücretsiz planda invite link'ler 30 günde expire olur. Aşağıdaki adım
 ### 2. Sunucuya bağlan
 
 ```bash
-ssh raspbog@100.69.111.79
+ssh user@your-server-ip
 ```
 
 ### 3. .env dosyasını güncelle
 
 ```bash
-nano /home/raspbog/slackbot/slackbot/.env
+nano ~/slackbot/slackbot/.env
 ```
 
 `SLACK_INVITE_LINK=` satırını bulup yeni linkle değiştir:
@@ -51,14 +51,13 @@ systemctl status slackbot
 ### Bot'u manuel restart etme
 
 ```bash
-ssh raspbog@100.69.111.79
+ssh user@your-server-ip
 sudo restart-bot
 ```
 
 ### Logları izleme
 
 ```bash
-ssh raspbog@100.69.111.79
 journalctl -u slackbot -f
 ```
 
@@ -73,12 +72,12 @@ journalctl -u slackbot -n 50
 Lokal makineden dosyaları kopyala:
 
 ```bash
-scp bot.py database.py blocks.py sheets.py mailer.py google_groups.py rss_feed.py raspbog@100.69.111.79:/home/raspbog/slackbot/slackbot/
+scp bot.py database.py blocks.py sheets.py mailer.py google_groups.py rss_feed.py user@your-server-ip:~/slackbot/slackbot/
 ```
 
 Sonra restart:
 
 ```bash
-ssh raspbog@100.69.111.79
+ssh user@your-server-ip
 sudo restart-bot
 ```
