@@ -445,7 +445,9 @@ def build_onboard_mapping_list(mappings: list[dict]) -> list[dict]:
 
     lines = []
     for m in mappings:
-        lines.append(f"  *{m['committee_name']}* → <#{m['channel_id']}>")
+        leader = m.get("leader_user_id")
+        leader_str = f" · leader: <@{leader}>" if leader else ""
+        lines.append(f"  *{m['committee_name']}* → <#{m['channel_id']}>{leader_str}")
 
     blocks.append({
         "type": "section",

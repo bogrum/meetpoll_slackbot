@@ -180,6 +180,9 @@ def handle_onboard_command(ack, body, client, logger):
             text="Committee channel mappings"
         )
 
+    elif text.startswith("leader"):
+        _handle_onboard_leader(text, channel_id, user_id, client)
+
     elif text.startswith("map "):
         logger.info(f"Onboard map raw text: {repr(text)}")
         _handle_onboard_map(text[4:].strip(), channel_id, user_id, client)
@@ -245,9 +248,12 @@ def handle_onboard_command(ack, body, client, logger):
             text=(
                 "Usage:\n"
                 "  `/onboard status` — show onboarding stats\n"
-                "  `/onboard list` — show committee→channel mappings\n"
+                "  `/onboard list` — show committee→channel mappings (with leaders)\n"
                 "  `/onboard map \"Committee\" #channel` — add a mapping\n"
                 "  `/onboard unmap \"Committee\"` — remove a mapping\n"
+                "  `/onboard leader list` — show committee leaders\n"
+                "  `/onboard leader set \"Committee\" @user` — set a committee leader\n"
+                "  `/onboard leader remove \"Committee\"` — remove a committee leader\n"
                 "  `/onboard run` — manually check for new registrations\n"
                 "  `/onboard seed` — import existing members as already onboarded\n"
                 "  `/onboard resend-since 2025-11-01` — re-send emails to seeded members after a date\n"
@@ -385,6 +391,102 @@ def _handle_onboard_admin(text: str, channel_id: str, user_id: str, client):
                 "  `/onboard admin list` — show admins\n"
                 "  `/onboard admin add @user` — add an admin\n"
                 "  `/onboard admin remove @user` — remove an admin"
+            )
+        )
+
+
+def _handle_onboard_leader(text: str, channel_id: str, user_id: str, client):
+    """Handle /onboard leader subcommands: list, set, remove."""
+    parts = text.split(None, 2)  # ["leader"] or ["leader", "set"/"remove"/"list", ...]
+    sub = parts[1] if len(parts) > 1 else ""
+
+    if sub == "list":
+        mappings = db.get_all_committee_channels()
+        if not mappings:
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=":warning: No committee mappings found. Use `/onboard map` to add one first."
+            )
+            return
+        lines = []
+        for m in mappings:
+            leader = m.get("leader_user_id")
+            if leader:
+                lines.append(f"*{m['committee_name']}*: <@{leader}>")
+            else:
+                lines.append(f"*{m['committee_name']}*: _(no leader set)_")
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":bust_in_silhouette: *Committee Leaders:*\n" + "\n".join(lines)
+        )
+
+    elif sub == "set" and len(parts) > 2:
+        rest = parts[2]
+        # Extract quoted committee name: "Committee Name" @user
+        match = re.match(r'^["\'](.+?)["\'](.*)$', rest)
+        if match:
+            committee = match.group(1).strip()
+            user_part = match.group(2).strip()
+        else:
+            # Split by last @mention or <@...> at end of string
+            user_match = re.search(r'(<@\w+(?:\|[^>]*)?>|\S+)\s*$', rest)
+            if user_match and ("@" in user_match.group(0) or user_match.group(0).startswith("<")):
+                committee = rest[:user_match.start()].strip()
+                user_part = user_match.group(0)
+            else:
+                committee = ""
+                user_part = ""
+
+        if not committee or not user_part:
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=':warning: Usage: `/onboard leader set "Committee Name" @user`'
+            )
+            return
+
+        target_id = _resolve_user_id(user_part, client)
+        if not target_id:
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=":warning: Could not find that user."
+            )
+            return
+
+        if not db.get_committee_channel(committee):
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f":warning: No mapping found for *{committee}*. Use `/onboard map` to add it first."
+            )
+            return
+
+        db.set_committee_leader(committee, target_id)
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=f":white_check_mark: <@{target_id}> is now the leader of *{committee}*."
+        )
+
+    elif sub == "remove" and len(parts) > 2:
+        committee = parts[2].strip().strip('"').strip("'")
+        if not db.get_committee_channel(committee):
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f":warning: No mapping found for *{committee}*."
+            )
+            return
+        db.set_committee_leader(committee, None)
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=f":white_check_mark: Removed leader for *{committee}*."
+        )
+
+    else:
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=(
+                "Usage:\n"
+                "  `/onboard leader list` — show all committee leaders\n"
+                '  `/onboard leader set "Committee" @user` — set a committee leader\n'
+                '  `/onboard leader remove "Committee"` — remove a committee leader'
             )
         )
 
@@ -1329,7 +1431,7 @@ def handle_member_joined(event, client, logger):
         committees_raw = member.get("committees", "")
         if committees_raw:
             committee_list = [c.strip() for c in committees_raw.split(",") if c.strip()]
-            _assign_committee_channels(client, slack_user_id, committee_list, email, logger)
+            _assign_committee_channels(client, slack_user_id, committee_list, email, logger, member)
 
         # Send welcome DM if configured
         welcome_method = WELCOME_METHOD
@@ -1346,7 +1448,7 @@ def handle_member_joined(event, client, logger):
 
 
 def _assign_committee_channels(client, slack_user_id: str, committees: list[str],
-                                email: str, logger):
+                                email: str, logger, member: dict = None):
     """Add a user to their committee channels using fuzzy matching."""
     all_mappings = db.get_all_committee_channels()
     if not all_mappings:
@@ -1354,12 +1456,16 @@ def _assign_committee_channels(client, slack_user_id: str, committees: list[str]
 
     assigned_any = False
     for committee in committees:
-        channel_id = _find_channel_for_committee(committee, all_mappings)
-        if channel_id:
+        mapping = _find_channel_for_committee(committee, all_mappings)
+        if mapping:
+            channel_id = mapping["channel_id"]
             try:
                 client.conversations_invite(channel=channel_id, users=slack_user_id)
                 assigned_any = True
                 logger.info(f"Added {slack_user_id} to channel {channel_id} for committee '{committee}'")
+                leader_id = mapping.get("leader_user_id")
+                if leader_id and member:
+                    _notify_committee_leader(client, leader_id, member, logger)
             except Exception as e:
                 error_str = str(e)
                 if "already_in_channel" in error_str:
@@ -1373,21 +1479,53 @@ def _assign_committee_channels(client, slack_user_id: str, committees: list[str]
         db.mark_channels_assigned(email)
 
 
-def _find_channel_for_committee(committee: str, mappings: list[dict]) -> str:
-    """Find a channel ID for a committee name using fuzzy matching."""
+def _find_channel_for_committee(committee: str, mappings: list[dict]) -> dict:
+    """Find the mapping dict for a committee name using fuzzy matching. Returns None if not found."""
     committee_lower = committee.lower().strip()
 
     # Exact match
     for m in mappings:
         if m["committee_name"].lower() == committee_lower:
-            return m["channel_id"]
+            return m
 
     # Substring match
     for m in mappings:
         if committee_lower in m["committee_name"].lower() or m["committee_name"].lower() in committee_lower:
-            return m["channel_id"]
+            return m
 
-    return ""
+    return None
+
+
+_TURKISH_VOWELS = set("aeıiouüöAEIİOUÜÖ")
+_FRONT_VOWELS = set("eiöüEİÖÜ")
+
+
+def _turkish_ablative(word: str) -> str:
+    """Return word + Turkish ablative suffix (-den/-dan with vowel harmony)."""
+    if not word:
+        return word
+    last_vowel = next((ch for ch in reversed(word) if ch in _TURKISH_VOWELS), "")
+    suffix = "den" if last_vowel in _FRONT_VOWELS else "dan"
+    connector = "n" if word[-1] in _TURKISH_VOWELS else ""
+    return f"{word}'{connector}{suffix}"
+
+
+def _notify_committee_leader(client, leader_id: str, member: dict, logger):
+    """Send a DM to a committee leader when a new member joins their committee."""
+    first = (member.get("first_name") or "").strip()
+    last = (member.get("last_name") or "").strip()
+    affiliation = (member.get("affiliations") or "").strip()
+    name_str = f"{first} {last}".strip() or "Yeni üye"
+    if affiliation:
+        aff_with_suffix = _turkish_ablative(affiliation)
+        msg = f"{aff_with_suffix} {name_str} ekibinize katıldı. Ona merhaba demeyi unutmayın!"
+    else:
+        msg = f"{name_str} ekibinize katıldı. Ona merhaba demeyi unutmayın!"
+    try:
+        client.chat_postMessage(channel=leader_id, text=msg)
+        logger.info(f"Notified committee leader {leader_id} about new member {name_str}")
+    except Exception as e:
+        logger.warning(f"Could not DM committee leader {leader_id}: {e}")
 
 
 def _send_welcome_dm(client, slack_user_id: str, first_name: str,

@@ -105,7 +105,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS committee_channels (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 committee_name TEXT UNIQUE NOT NULL,
-                channel_id TEXT NOT NULL
+                channel_id TEXT NOT NULL,
+                leader_user_id TEXT
             )
         """)
 
@@ -193,6 +194,12 @@ def init_db():
         # group_added column migration for existing databases
         try:
             cursor.execute("ALTER TABLE processed_members ADD COLUMN group_added INTEGER DEFAULT 0")
+        except Exception:
+            pass  # Column already exists
+
+        # leader_user_id column migration for existing databases
+        try:
+            cursor.execute("ALTER TABLE committee_channels ADD COLUMN leader_user_id TEXT")
         except Exception:
             pass  # Column already exists
 
@@ -533,6 +540,29 @@ def delete_committee_channel(committee_name: str) -> bool:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM committee_channels WHERE committee_name = ?", (committee_name,))
         return cursor.rowcount > 0
+
+
+def set_committee_leader(committee_name: str, leader_user_id: Optional[str]) -> bool:
+    """Set or clear the leader for a committee. Returns True if the committee exists."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE committee_channels SET leader_user_id = ? WHERE committee_name = ?",
+            (leader_user_id, committee_name)
+        )
+        return cursor.rowcount > 0
+
+
+def get_committee_leader(committee_name: str) -> Optional[str]:
+    """Get the leader Slack user ID for a committee, or None if not set."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT leader_user_id FROM committee_channels WHERE committee_name = ?",
+            (committee_name,)
+        )
+        row = cursor.fetchone()
+        return row["leader_user_id"] if row else None
 
 
 def get_setting(key: str) -> Optional[str]:
