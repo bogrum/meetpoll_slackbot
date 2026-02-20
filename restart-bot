@@ -1,0 +1,7 @@
+#!/bin/bash
+# Cleanly restart the slackbot service, killing any orphan processes first.
+# Usage: sudo restart-bot
+systemctl stop slackbot
+pkill -9 -f "python bot.py" 2>/dev/null
+sleep 2
+systemctl start slackbot
