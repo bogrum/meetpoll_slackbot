@@ -601,6 +601,16 @@ Invite the bot to the channel: `/invite @MeetPoll`
 
 ---
 
+## Maintenance
+
+### Slack Invite Link (Monthly)
+
+Slack's free plan invite links expire every 30 days. When the link expires, new members won't receive a working invite in their welcome email.
+
+Renew the link monthly — see [MAINTENANCE.md](MAINTENANCE.md) for step-by-step instructions.
+
+---
+
 ## Security Notes
 
 - Never commit `.env` or `service_account.json` — both are in `.gitignore`
