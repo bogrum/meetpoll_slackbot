@@ -25,7 +25,8 @@ A self-hosted Slack bot for meeting scheduling polls, event management with RSVP
 - Sends bilingual (Turkish/English) welcome emails with Slack invite link
 - On `team_join`, auto-adds members to their selected committee channels
 - Sends welcome DM with committee info
-- `/onboard` command for managing the system (status, mappings, manual runs)
+- When a new member joins a committee channel, sends a DM to that committee's leader (Turkish, with vowel harmony)
+- `/onboard` command for managing the system (status, mappings, leaders, manual runs)
 - First-run safety: `/onboard seed` to import existing members without emailing them
 
 ### Outreach Emails
@@ -439,7 +440,21 @@ Repeat for each committee. Verify with:
 /onboard list
 ```
 
-### 4. Verify the Setup
+### 4. Set Up Committee Leaders (Optional)
+
+Assign a leader to each committee. When a new member joins their channel, the leader receives a DM:
+
+```
+/onboard leader set "Website" @emre
+/onboard leader set "Journal Club" @ayse
+```
+
+Verify with:
+```
+/onboard leader list
+```
+
+### 5. Verify the Setup
 
 ```
 /onboard status
@@ -447,7 +462,7 @@ Repeat for each committee. Verify with:
 
 Should show your seeded member count as `fully_onboarded`.
 
-### 5. Test with a New Entry
+### 6. Test with a New Entry
 
 1. Add a test entry to your Google Form with your own email
 2. Run `/onboard run` in Slack (or wait up to 1 hour for automatic check)
@@ -486,9 +501,12 @@ RSVP buttons appear on the event message: **Going**, **Maybe**, **Not Going**. I
 | Command | Description |
 |---|---|
 | `/onboard status` | Show onboarding statistics |
-| `/onboard list` | Show committee-to-channel mappings |
+| `/onboard list` | Show committee-to-channel mappings (with leaders) |
 | `/onboard map "Committee" #channel` | Add or update a mapping |
 | `/onboard unmap "Committee"` | Remove a mapping |
+| `/onboard leader list` | Show all committee leaders |
+| `/onboard leader set "Committee" @user` | Set a committee leader |
+| `/onboard leader remove "Committee"` | Remove a committee leader |
 | `/onboard run` | Manually check Google Sheet for new registrations |
 | `/onboard seed` | Import all existing entries as already-onboarded (first-run safety) |
 | `/onboard resend-since 2025-11-01` | Re-send welcome emails to seeded members registered after a date |
