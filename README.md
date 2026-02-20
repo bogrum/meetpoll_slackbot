@@ -382,15 +382,9 @@ Then on the Pi (use the restart-bot script to avoid duplicate processes):
 sudo restart-bot
 ```
 
-To create the restart-bot helper (one-time setup):
+To install the restart-bot helper (one-time setup):
 ```bash
-sudo nano /usr/local/bin/restart-bot
-# Contents:
-#   #!/bin/bash
-#   systemctl stop slackbot
-#   pkill -9 -f "python bot.py" 2>/dev/null
-#   sleep 2
-#   systemctl start slackbot
+sudo cp restart-bot /usr/local/bin/restart-bot
 sudo chmod +x /usr/local/bin/restart-bot
 ```
 
