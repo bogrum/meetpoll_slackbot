@@ -46,13 +46,25 @@ A self-hosted Slack bot for meeting scheduling polls, event management with RSVP
 - Retry logic: members who missed group-add (e.g. during downtime) are retried on next registration check
 - If `GOOGLE_GROUP_EMAIL` is not set, this feature is silently skipped
 
-### Bioinformatics RSS Opportunity Feed
-- Fetches [jobrxiv.org](https://jobrxiv.org) and [opportunitydesk.org](https://opportunitydesk.org) twice daily (10:00 and 22:00)
-- Filters entries by bioinformatics-related keywords (genomics, sequencing, omics, ML, etc.)
+### Bioinformatics Opportunity Feed
+- Fetches multiple sources twice daily (10:00 and 22:00) and on demand via `/queue scan`
+- Sources:
+  - [jobrxiv.org](https://jobrxiv.org/job-category/bioinfo/) — bioinformatics-specific job listings
+  - [opportunitydesk.org](https://opportunitydesk.org) — fellowships, scholarships, grants
+  - [ELIXIR TeSS](https://tess.elixir-europe.org) — European training events, summer schools, workshops
+  - [EMBL](https://www.embl.org) and [Wellcome Sanger Institute](https://www.sanger.ac.uk) via Workday API
+- Filters by bioinformatics keywords in the title (not just description — avoids false positives)
+- Title blacklist rejects senior/postdoc/director-level roles automatically
+- Entries older than 30 days are skipped to avoid expired listings
+- Adzuna API support for additional European internship search (optional, requires free API key)
 - New items are queued and posted at random times within the 10:00–22:00 window
 - Maximum 5 posts per calendar day, preventing channel spam
-- Each posted item is tracked by GUID — never posted twice
+- Each posted item is tracked by GUID — never posted twice, never re-queued after manual deletion
 - Posts to the channel configured via `JOBS_CHANNEL_ID`
+- `/queue` command lets admins view, delete, and manually scan the pending queue
+
+> **TUBITAK note:** TUBITAK does not provide an RSS feed for scholarship/call announcements.
+> Monitor [tubitak.gov.tr/en/announcements](https://tubitak.gov.tr/en/announcements) manually for BIDEB calls (2205, 2209, 2247-C).
 
 ## Prerequisites
 
@@ -111,6 +123,7 @@ Socket Mode allows your bot to connect without a public URL.
 | `/event` | Create and manage events | `create` or `list` |
 | `/onboard` | Manage member onboarding | `status`, `list`, `map`, `unmap`, `run`, `seed` |
 | `/outreach` | Send personalized outreach emails | `academics`, `clubs`, `status`, `history` |
+| `/queue` | Manage the pending opportunities queue | (no args) or `scan` |
 
 ### Step 5: Enable Interactivity
 
@@ -322,6 +335,8 @@ ONBOARD_AFTER_DATE=
 | `GOOGLE_GROUP_EMAIL` | Google Group email to auto-add new members to (e.g. `members@yourdomain.org`). Requires DWD. Leave empty to disable. |
 | `GOOGLE_ADMIN_EMAIL` | A Google Workspace admin email to impersonate for domain-wide delegation |
 | `JOBS_CHANNEL_ID` | Slack channel ID where bioinformatics RSS opportunities are posted (e.g. `CQ14TLAGK`) |
+| `ADZUNA_APP_ID` | (Optional) Adzuna API app ID — free tier at [developer.adzuna.com](https://developer.adzuna.com) |
+| `ADZUNA_APP_KEY` | (Optional) Adzuna API key — enables additional European internship search |
 
 ### Raspberry Pi Deployment
 
@@ -541,6 +556,17 @@ RSVP buttons appear on the event message: **Going**, **Maybe**, **Not Going**. I
 
 Share each sheet with the service account email as Viewer. Sheets must be native Google Sheets (not uploaded `.xlsx` files).
 
+### Opportunity Queue Management
+
+The `/queue` command is restricted to onboard admins.
+
+| Command | Description |
+|---|---|
+| `/queue` | Show all pending items with a Delete button on each |
+| `/queue scan` | Immediately scan all sources and queue new items, then report how many were added |
+
+Deleting an item permanently suppresses it — it will never be re-queued by future scans.
+
 ### Automatic Background Jobs
 
 | Job | Schedule | Description |
@@ -565,6 +591,7 @@ meetpoll/
 ├── mailer.py             # Gmail SMTP email sender
 ├── google_groups.py      # Google Groups auto-add via Admin SDK DWD
 ├── rss_feed.py           # RSS feed fetcher and bioinformatics keyword filter
+├── job_fetcher.py        # Workday and Adzuna API job fetchers
 ├── requirements.txt      # Python dependencies
 ├── .env.template         # Environment variables template
 ├── .env                  # Your actual environment file (do not commit)
