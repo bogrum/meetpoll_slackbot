@@ -23,6 +23,7 @@ import sheets
 import mailer
 import google_groups
 import rss_feed
+import job_fetcher
 
 # Load environment variables
 load_dotenv()
@@ -51,6 +52,10 @@ GOOGLE_GROUP_EMAIL = os.getenv("GOOGLE_GROUP_EMAIL", "")
 
 # RSS opportunities config
 JOBS_CHANNEL_ID = os.getenv("JOBS_CHANNEL_ID", "")
+
+# Adzuna job API config (optional — free tier at developer.adzuna.com)
+ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID", "")
+ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY", "")
 
 
 # ============================================================================
@@ -657,6 +662,121 @@ def handle_outreach_command(ack, body, client, logger):
                 "  `/outreach send <campaign_id> email1 email2 ...` \u2014 resend a campaign to specific addresses"
             )
         )
+
+
+# ============================================================================
+# /queue SLASH COMMAND HANDLER
+# ============================================================================
+
+def _build_queue_blocks(opportunities: list) -> list:
+    """Build Block Kit blocks for the pending opportunities queue view."""
+    if not opportunities:
+        return [{"type": "section", "text": {"type": "mrkdwn", "text": "Queue is empty."}}]
+
+    blocks_list = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"Pending Queue ({len(opportunities)} items)"},
+        }
+    ]
+    for opp in opportunities:
+        title = opp.get("title") or opp.get("guid", "Untitled")
+        guid = opp.get("guid", "")
+        link = opp.get("link", "")
+        label = f"<{link}|{title}>" if link else title
+        blocks_list.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": label},
+            "accessory": {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Delete"},
+                "style": "danger",
+                "action_id": "queue_delete_opp",
+                "value": guid,
+            },
+        })
+    return blocks_list
+
+
+@app.command("/queue")
+def handle_queue_command(ack, body, client, logger):
+    """Show and manage the pending opportunities queue (admin only).
+
+    Subcommands:
+      /queue        — show pending items with delete buttons
+      /queue scan   — manually trigger a full source scan and queue new items
+    """
+    ack()
+    user_id = body["user_id"]
+    channel_id = body.get("channel_id", user_id)
+    text = (body.get("text") or "").strip().lower()
+
+    if not _is_onboard_authorized(user_id):
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":no_entry: You don't have permission to use `/queue`."
+        )
+        return
+
+    if text == "scan":
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text="Scanning all sources... this may take a few seconds."
+        )
+        def _do_scan():
+            try:
+                before = db.count_pending_opportunities()
+                refresh_rss_queue()
+                after = db.count_pending_opportunities()
+                added = after - before
+                client.chat_postEphemeral(
+                    channel=channel_id, user=user_id,
+                    text=f"Scan complete. {added} new item(s) added. Queue now has {after} pending."
+                )
+            except Exception as e:
+                logger.error(f"Error during manual scan: {e}")
+                client.chat_postEphemeral(
+                    channel=channel_id, user=user_id,
+                    text=f":warning: Scan failed: {e}"
+                )
+        threading.Thread(target=_do_scan, daemon=True).start()
+        return
+
+    try:
+        opportunities = db.get_pending_opportunities()
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            blocks=_build_queue_blocks(opportunities),
+            text=f"Pending queue: {len(opportunities)} items",
+        )
+    except Exception as e:
+        logger.error(f"Error showing queue: {e}")
+
+
+@app.action("queue_delete_opp")
+def handle_queue_delete(ack, body, respond, logger):
+    """Handle Delete button on a pending opportunity."""
+    ack()
+    user_id = body["user"]["id"]
+
+    if not _is_onboard_authorized(user_id):
+        respond(text=":no_entry: You don't have permission to delete queue items.", replace_original=False)
+        return
+
+    try:
+        guid = body["actions"][0]["value"]
+        # Mark as posted so it's never re-queued by future scans
+        opp = db.get_pending_opportunity(guid)
+        db.mark_opportunity_posted(guid, opp["title"] if opp else "", opp["link"] if opp else "")
+        db.remove_pending_opportunity(guid)
+        opportunities = db.get_pending_opportunities()
+        respond(
+            blocks=_build_queue_blocks(opportunities),
+            text=f"Pending queue: {len(opportunities)} items",
+            replace_original=True,
+        )
+    except Exception as e:
+        logger.error(f"Error deleting queue item: {e}")
 
 
 # ============================================================================
@@ -1896,13 +2016,81 @@ def _schedule_random_posts():
         logger.info(f"Scheduled RSS post slot {i+1}/{to_schedule} at {post_time.strftime('%H:%M')}")
 
 
+def _add_jobs_to_queue(jobs: list) -> int:
+    """Deduplicate and enqueue a list of Job objects. Returns count added."""
+    added = 0
+    for j in jobs:
+        opp = j.to_opportunity_dict()
+        guid = opp.get("guid", "")
+        if not guid:
+            continue
+        if db.is_opportunity_posted(guid) or db.is_opportunity_pending(guid):
+            continue
+        db.add_pending_opportunity(opp)
+        added += 1
+    return added
+
+
+_WORKDAY_RELEVANT_KEYWORDS = {
+    "bioinformatics", "computational", "genomics", "internship",
+    "transcriptomics", "proteomics", "sequencing", "omics",
+    "rna-seq", "single-cell", "machine learning", "data science",
+    "systems biology", "biostatistics", "structural biology",
+    "molecular biology", "student", "trainee",
+}
+
+def _is_workday_relevant(title: str) -> bool:
+    """Check if a Workday job title is relevant to our community."""
+    t = title.lower()
+    return any(kw in t for kw in _WORKDAY_RELEVANT_KEYWORDS)
+
+
+def _refresh_workday_queue() -> int:
+    """Fetch undergrad-friendly jobs from all known Workday institutions."""
+    fetcher = job_fetcher.WorkdayFetcher()
+    # Avoid bare "intern" — Workday does substring matching and it hits
+    # "internal", "infrastructure", "international", etc.
+    search_terms = ["internship", "bioinformatics", "computational", "genomics", "student"]
+    added = 0
+    for institution_key in job_fetcher.WorkdayFetcher.KNOWN_INSTITUTIONS:
+        for term in search_terms:
+            try:
+                jobs = fetcher.fetch_all_pages(
+                    institution_key=institution_key,
+                    search_text=term,
+                    undergrad_only=True,
+                )
+                relevant = [j for j in jobs if _is_workday_relevant(j.title)]
+                added += _add_jobs_to_queue(relevant)
+            except Exception as e:
+                logger.warning(f"Workday fetch failed for '{institution_key}' / '{term}': {e}")
+    return added
+
+
+def _refresh_adzuna_queue() -> int:
+    """Fetch undergrad-friendly jobs from Adzuna (requires API key in .env)."""
+    fetcher = job_fetcher.AdzunaFetcher(ADZUNA_APP_ID, ADZUNA_APP_KEY)
+    queries = ["bioinformatics intern", "computational biology internship", "genomics undergraduate"]
+    added = 0
+    for query in queries:
+        try:
+            jobs = fetcher.fetch(query=query, country="gb", undergrad_only=False)
+            # Require explicit whitelist match (intern/student/etc.) — `None` (unknown) is rejected
+            jobs = [j for j in jobs if j.is_undergrad_friendly() is True]
+            added += _add_jobs_to_queue(jobs)
+        except Exception as e:
+            logger.warning(f"Adzuna fetch failed for query '{query}': {e}")
+    return added
+
+
 def refresh_rss_queue():
-    """Fetch feeds, update pending queue, and schedule random posts for the day."""
+    """Fetch feeds and job APIs, update pending queue, schedule random posts for the day."""
     if not JOBS_CHANNEL_ID:
         return
     try:
+        # RSS feeds (jobrxiv, opportunitydesk)
         opportunities = rss_feed.fetch_bioinformatics_opportunities()
-        added = 0
+        rss_added = 0
         for opp in opportunities:
             guid = opp.get("guid", "")
             if not guid:
@@ -1910,8 +2098,17 @@ def refresh_rss_queue():
             if db.is_opportunity_posted(guid) or db.is_opportunity_pending(guid):
                 continue
             db.add_pending_opportunity(opp)
-            added += 1
-        logger.info(f"RSS queue refreshed: {added} new items added to pending queue")
+            rss_added += 1
+        logger.info(f"RSS queue refreshed: {rss_added} new items added")
+
+        # Workday (free, no key needed)
+        wday_added = _refresh_workday_queue()
+        logger.info(f"Workday queue refreshed: {wday_added} new items added")
+
+        # Adzuna (optional, needs ADZUNA_APP_ID + ADZUNA_APP_KEY in .env)
+        if ADZUNA_APP_ID and ADZUNA_APP_KEY:
+            adzuna_added = _refresh_adzuna_queue()
+            logger.info(f"Adzuna queue refreshed: {adzuna_added} new items added")
 
         _schedule_random_posts()
 

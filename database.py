@@ -1093,12 +1093,29 @@ def add_pending_opportunity(opp: dict):
         """, (opp["guid"], opp["title"], opp["link"], opp.get("summary", "")))
 
 
+def get_pending_opportunity(guid: str) -> dict | None:
+    """Get a single pending opportunity by guid."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM pending_opportunities WHERE guid = ?", (guid,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
 def get_pending_opportunities() -> list[dict]:
     """Get all pending opportunities ordered by when they were added."""
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM pending_opportunities ORDER BY added_at")
         return [dict(row) for row in cursor.fetchall()]
+
+
+def count_pending_opportunities() -> int:
+    """Return the number of items currently in the pending queue."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM pending_opportunities")
+        return cursor.fetchone()[0]
 
 
 def remove_pending_opportunity(guid: str):
