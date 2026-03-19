@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 DATABASE_PATH = os.getenv("DATABASE_PATH", "./meetpoll.db")
 
 # Schema version — increment when adding migrations
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def get_connection() -> sqlite3.Connection:
@@ -111,6 +111,22 @@ def _run_migrations(conn):
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_activity_last_seen ON user_activity(last_seen)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_engagement_nudges_user ON engagement_nudges(user_id, nudge_type)")
         logger.info("Applied migration 3: engagement tables")
+
+    # Migration 4: message_log table for full DM audit trail
+    if current < 4:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS message_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recipient_id TEXT NOT NULL,
+                message_type TEXT NOT NULL,
+                message_text TEXT,
+                was_edited INTEGER DEFAULT 0,
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_message_log_recipient ON message_log(recipient_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_message_log_sent_at ON message_log(sent_at)")
+        logger.info("Applied migration 4: message_log table")
 
     # Record final version
     cursor.execute("INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?, CURRENT_TIMESTAMP)",
@@ -354,6 +370,20 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_outreach_campaigns_status ON outreach_campaigns(status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_activity_last_seen ON user_activity(last_seen)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_engagement_nudges_user ON engagement_nudges(user_id, nudge_type)")
+
+        # Message log — full audit trail of every DM the bot sends
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS message_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recipient_id TEXT NOT NULL,
+                message_type TEXT NOT NULL,
+                message_text TEXT,
+                was_edited INTEGER DEFAULT 0,
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_message_log_recipient ON message_log(recipient_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_message_log_sent_at ON message_log(sent_at)")
 
         # Run any pending migrations for existing databases
         _run_migrations(conn)
@@ -1618,3 +1648,52 @@ def get_weekly_digest_data() -> dict:
             "opportunities_this_week": opportunities_this_week,
             "total_members": total_members,
         }
+
+
+# ============================================================================
+# MESSAGE LOG
+# ============================================================================
+
+def log_message(recipient_id: str, message_type: str, message_text: str,
+                was_edited: bool = False):
+    """Log every DM the bot sends for full audit trail.
+
+    Args:
+        recipient_id: Slack user ID of the recipient
+        message_type: Type of message ('welcome_dm', 'nudge', 'committee_leader_notification',
+                      'event_reminder', 'weekly_digest', 'milestone')
+        message_text: Plain-text content of the message
+        was_edited: True if an admin edited the draft before sending
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO message_log (recipient_id, message_type, message_text, was_edited)
+            VALUES (?, ?, ?, ?)
+        """, (recipient_id, message_type, message_text, 1 if was_edited else 0))
+
+
+def get_message_log(recipient_id: str = None, message_type: str = None,
+                    days: int = 30, limit: int = 50) -> list[dict]:
+    """Query the message log. Optionally filter by recipient, type, or recency."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        conditions = ["sent_at >= datetime('now', ? || ' days')"]
+        params = [f"-{days}"]
+
+        if recipient_id:
+            conditions.append("recipient_id = ?")
+            params.append(recipient_id)
+        if message_type:
+            conditions.append("message_type = ?")
+            params.append(message_type)
+
+        where = " AND ".join(conditions)
+        params.append(limit)
+        cursor.execute(f"""
+            SELECT * FROM message_log
+            WHERE {where}
+            ORDER BY sent_at DESC
+            LIMIT ?
+        """, params)
+        return [dict(row) for row in cursor.fetchall()]

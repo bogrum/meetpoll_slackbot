@@ -2294,6 +2294,31 @@ def handle_engage_command(ack, body, client, logger):
             text=":white_check_mark: Weekly digest posted."
         )
 
+    elif text.startswith("log"):
+        parts = text.split(None, 1)
+        days = 30
+        if len(parts) > 1:
+            try:
+                days = int(parts[1])
+            except ValueError:
+                pass
+        entries = db.get_message_log(days=days, limit=20)
+        if not entries:
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text=f":mailbox_with_no_mail: No messages logged in the last {days} days."
+            )
+        else:
+            lines = [f":scroll: *Message Log — last {days} days* ({len(entries)} entries)\n"]
+            for e in entries:
+                sent = e["sent_at"][:16]
+                edited = " _(edited)_" if e["was_edited"] else ""
+                lines.append(f"• `{e['message_type']}`{edited} → <@{e['recipient_id']}> — {sent}\n  _{e['message_text'][:120]}_")
+            client.chat_postEphemeral(
+                channel=channel_id, user=user_id,
+                text="\n".join(lines)
+            )
+
     else:
         client.chat_postEphemeral(
             channel=channel_id, user=user_id,
@@ -2302,7 +2327,9 @@ def handle_engage_command(ack, body, client, logger):
                 "  `/engage stats` \u2014 engagement breakdown\n"
                 "  `/engage inactive` \u2014 list inactive members\n"
                 "  `/engage nudge` \u2014 send re-engagement nudges\n"
-                "  `/engage digest` \u2014 trigger weekly digest"
+                "  `/engage digest` \u2014 trigger weekly digest\n"
+                "  `/engage log` \u2014 show last 30 days of sent messages\n"
+                "  `/engage log 7` \u2014 show last N days"
             )
         )
 
@@ -2358,6 +2385,7 @@ def _send_engagement_nudges() -> int:
                     text="We miss you in the community!"
                 )
                 db.record_nudge_sent(user_id, "reengagement")
+                db.log_message(user_id, "nudge", "We miss you in the community!")
                 count += 1
                 logger.info(f"Sent re-engagement nudge to {user_id}")
             except Exception as e:
