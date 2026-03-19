@@ -374,50 +374,119 @@ def build_error_message(error: str) -> list[dict]:
 # ONBOARDING BLOCK BUILDERS
 # ============================================================================
 
-def build_welcome_dm_blocks(first_name: str, committees: list[str]) -> list[dict]:
-    """Build Slack DM welcome message blocks for a new member."""
-    blocks = [
+def build_welcome_dm_blocks(first_name: str,
+                             committees_with_channels: list[dict],
+                             membership_choice: str,
+                             upcoming_events: list[dict],
+                             general_channel_id: str = "") -> list[dict]:
+    """Build Slack DM welcome message blocks for a new member.
+
+    Args:
+        first_name: Member's first name
+        committees_with_channels: List of {"name": str, "channel_id": str|None}
+        membership_choice: Raw membership choice string from form (active or passive)
+        upcoming_events: List of upcoming event dicts from DB
+        general_channel_id: Optional Slack channel ID for #general mentions
+    """
+    is_active = "aktif" in membership_choice.lower() or "active" in membership_choice.lower()
+
+    result = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": ":wave: Welcome to NY-RSG Turkiye!", "emoji": True}
+            "text": {"type": "plain_text", "text": ":tada: RSG-Türkiye'ye Hoş Geldiniz! / Welcome!", "emoji": True}
         },
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f"Hi {first_name}! Welcome to our Slack workspace. We're glad you're here!"
+                "text": (
+                    f"Merhaba {first_name}! Topluluğumuza katıldığın için çok mutluyuz.\n"
+                    f"Hi {first_name}! We're so glad you joined our community."
+                )
             }
         },
         {"type": "divider"},
     ]
 
-    if committees:
-        committee_list = "\n".join([f"  - {c}" for c in committees])
-        blocks.append({
+    if is_active and committees_with_channels:
+        lines = []
+        for c in committees_with_channels:
+            if c.get("channel_id"):
+                lines.append(f"• {c['name']} → <#{c['channel_id']}>")
+            else:
+                lines.append(f"• {c['name']}")
+        result.append({
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f":clipboard: *Your committees:*\n{committee_list}\n\nYou've been automatically added to the corresponding channels."
+                "text": (
+                    ":clipboard: *Komiteleriniz / Your committees:*\n"
+                    + "\n".join(lines) + "\n\n"
+                    "Komite kanallarına gidip kendinizi kısaca tanıtabilirsiniz — sizi bekliyoruz! :wave:\n"
+                    "Head over to your committee channels and say hi — we're waiting for you!"
+                )
+            }
+        })
+    elif is_active:
+        result.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    ":clipboard: Aktif üye olarak komite kanallarını keşfedebilir, "
+                    "istediğin birine katılabilirsin.\n"
+                    "As an active member, feel free to explore the committee channels "
+                    "and join whichever interests you."
+                )
             }
         })
     else:
-        blocks.append({
+        general_mention = f"<#{general_channel_id}>" if general_channel_id else "#general"
+        result.append({
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": "Feel free to explore the channels and join any that interest you!"
+                "text": (
+                    ":eyes: Pasif üye olarak etkinlikleri takip edebilir, ilgini çekenlere "
+                    "katılabilirsin — herhangi bir organizasyon sorumluluğun yok.\n"
+                    "As a passive member, you can follow along and join any events that "
+                    "interest you — no pressure to organize anything.\n\n"
+                    f":pushpin: Tüm duyurular {general_mention} kanalından paylaşılıyor, takipte kal!\n"
+                    f"All announcements go through {general_mention} — keep an eye on it!"
+                )
             }
         })
 
-    blocks.append({
-        "type": "section",
-        "text": {
+    if upcoming_events:
+        event_lines = []
+        for e in upcoming_events[:2]:
+            dt = (e.get("event_datetime") or "")[:16]
+            event_lines.append(f"• *{e['title']}* — {dt}")
+        result.append({"type": "divider"})
+        result.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    ":calendar: *Yaklaşan Etkinlikler / Upcoming Events:*\n"
+                    + "\n".join(event_lines)
+                )
+            }
+        })
+
+    result.append({"type": "divider"})
+    result.append({
+        "type": "context",
+        "elements": [{
             "type": "mrkdwn",
-            "text": "If you have any questions, don't hesitate to ask. Enjoy!"
-        }
+            "text": (
+                "Herhangi bir sorun olursa bu DM üzerinden bize ulaşabilirsin. :slightly_smiling_face:\n"
+                "Feel free to reach out here anytime. — *RSG-Türkiye*"
+            )
+        }]
     })
 
-    return blocks
+    return result
 
 
 def build_onboard_status_message(stats: dict) -> list[dict]:

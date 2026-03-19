@@ -1585,7 +1585,7 @@ def handle_member_joined(event, client, logger):
         welcome_method = WELCOME_METHOD
         if welcome_method in ("slack_dm", "both"):
             committee_list = [c.strip() for c in committees_raw.split(",") if c.strip()] if committees_raw else []
-            _send_welcome_dm(client, slack_user_id, member.get("first_name", ""), committee_list, email, logger)
+            _send_welcome_dm(client, slack_user_id, member.get("first_name", ""), committee_list, email, logger, member)
 
         # Mark as onboarded
         db.mark_onboarded(email)
@@ -1671,22 +1671,46 @@ def _notify_committee_leader(client, leader_id: str, member: dict, logger):
         msg = f"{name_str} ekibinize katıldı. Ona merhaba demeyi unutmayın!"
     try:
         client.chat_postMessage(channel=leader_id, text=msg)
+        db.log_message(leader_id, "committee_leader_notification", msg)
         logger.info(f"Notified committee leader {leader_id} about new member {name_str}")
     except Exception as e:
         logger.warning(f"Could not DM committee leader {leader_id}: {e}")
 
 
 def _send_welcome_dm(client, slack_user_id: str, first_name: str,
-                      committees: list[str], email: str, logger):
+                      committees: list[str], email: str, logger, member: dict = None):
     """Send a welcome DM to a new member."""
     try:
-        dm_blocks = blocks.build_welcome_dm_blocks(first_name or "there", committees)
+        # Resolve committee names → channel IDs
+        all_mappings = db.get_all_committee_channels()
+        committees_with_channels = []
+        for c in committees:
+            mapping = _find_channel_for_committee(c, all_mappings)
+            committees_with_channels.append({
+                "name": c,
+                "channel_id": mapping["channel_id"] if mapping else None
+            })
+
+        membership_choice = (member.get("membership_choice") or "") if member else ""
+        upcoming = db.get_upcoming_events(limit=2)
+
+        dm_blocks = blocks.build_welcome_dm_blocks(
+            first_name=first_name or "there",
+            committees_with_channels=committees_with_channels,
+            membership_choice=membership_choice,
+            upcoming_events=upcoming,
+            general_channel_id=GENERAL_CHANNEL_ID
+        )
         client.chat_postMessage(
             channel=slack_user_id,
             blocks=dm_blocks,
-            text=f"Welcome to NY-RSG Turkiye, {first_name or 'there'}!"
+            text=f"RSG-Türkiye'ye Hoş Geldiniz / Welcome, {first_name or 'there'}!"
         )
         db.mark_dm_sent(email)
+        db.log_message(slack_user_id, "welcome_dm",
+                       f"Welcome DM sent to {first_name or 'there'} "
+                       f"(membership: {membership_choice or 'unknown'}, "
+                       f"committees: {', '.join(committees) or 'none'})")
         logger.info(f"Sent welcome DM to {slack_user_id}")
     except Exception as e:
         logger.error(f"Error sending welcome DM to {slack_user_id}: {e}")
