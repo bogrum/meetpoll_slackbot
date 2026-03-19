@@ -1,21 +1,29 @@
 """
 SQLite database module for MeetPoll bot.
-Handles poll, option, vote, event, RSVP, and onboarding storage operations.
+Handles poll, option, vote, event, RSVP, onboarding, and engagement storage operations.
 """
 
 import sqlite3
 import os
+import shutil
+import logging
 from datetime import datetime
 from typing import Optional
 from contextlib import contextmanager
 
+logger = logging.getLogger(__name__)
+
 DATABASE_PATH = os.getenv("DATABASE_PATH", "./meetpoll.db")
+
+# Schema version — increment when adding migrations
+SCHEMA_VERSION = 3
 
 
 def get_connection() -> sqlite3.Connection:
-    """Get a database connection with row factory enabled."""
+    """Get a database connection with row factory and foreign keys enabled."""
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -33,10 +41,96 @@ def get_db():
         conn.close()
 
 
+def _get_schema_version(conn) -> int:
+    """Get the current schema version from the database."""
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1")
+        row = cursor.fetchone()
+        return row["version"] if row else 0
+    except sqlite3.OperationalError:
+        return 0
+
+
+def _run_migrations(conn):
+    """Run any pending schema migrations."""
+    cursor = conn.cursor()
+    current = _get_schema_version(conn)
+    if current >= SCHEMA_VERSION:
+        return
+
+    # Migration 1: add group_added to processed_members, leader_user_id to committee_channels
+    if current < 1:
+        try:
+            cursor.execute("ALTER TABLE processed_members ADD COLUMN group_added INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute("ALTER TABLE committee_channels ADD COLUMN leader_user_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        logger.info("Applied migration 1: group_added, leader_user_id columns")
+
+    # Migration 2: add anonymous column to polls
+    if current < 2:
+        try:
+            cursor.execute("ALTER TABLE polls ADD COLUMN anonymous INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+        logger.info("Applied migration 2: anonymous polls column")
+
+    # Migration 3: engagement tables (user_activity, engagement_nudges, milestones)
+    if current < 3:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_activity (
+                user_id TEXT PRIMARY KEY,
+                last_poll_vote TIMESTAMP,
+                last_rsvp TIMESTAMP,
+                last_message TIMESTAMP,
+                last_seen TIMESTAMP,
+                total_votes INTEGER DEFAULT 0,
+                total_rsvps INTEGER DEFAULT 0
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS engagement_nudges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                nudge_type TEXT NOT NULL,
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS milestones (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                milestone_type TEXT NOT NULL,
+                milestone_value INTEGER NOT NULL,
+                celebrated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_activity_last_seen ON user_activity(last_seen)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_engagement_nudges_user ON engagement_nudges(user_id, nudge_type)")
+        logger.info("Applied migration 3: engagement tables")
+
+    # Record final version
+    cursor.execute("INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?, CURRENT_TIMESTAMP)",
+                   (SCHEMA_VERSION,))
+    conn.commit()
+    logger.info(f"Schema updated to version {SCHEMA_VERSION}")
+
+
 def init_db():
-    """Initialize database with required tables."""
+    """Initialize database with required tables and run migrations."""
     with get_db() as conn:
         cursor = conn.cursor()
+
+        # Schema version tracking
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
         # Polls table
         cursor.execute("""
@@ -48,6 +142,7 @@ def init_db():
                 message_ts TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 closes_at TIMESTAMP,
+                anonymous INTEGER DEFAULT 0,
                 status TEXT DEFAULT 'open' CHECK(status IN ('open', 'closed'))
             )
         """)
@@ -191,18 +286,6 @@ def init_db():
             )
         """)
 
-        # group_added column migration for existing databases
-        try:
-            cursor.execute("ALTER TABLE processed_members ADD COLUMN group_added INTEGER DEFAULT 0")
-        except Exception:
-            pass  # Column already exists
-
-        # leader_user_id column migration for existing databases
-        try:
-            cursor.execute("ALTER TABLE committee_channels ADD COLUMN leader_user_id TEXT")
-        except Exception:
-            pass  # Column already exists
-
         # Posted opportunities table (RSS feed dedup)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS posted_opportunities (
@@ -224,6 +307,37 @@ def init_db():
             )
         """)
 
+        # Engagement tables (also created by migration 3 for existing DBs)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_activity (
+                user_id TEXT PRIMARY KEY,
+                last_poll_vote TIMESTAMP,
+                last_rsvp TIMESTAMP,
+                last_message TIMESTAMP,
+                last_seen TIMESTAMP,
+                total_votes INTEGER DEFAULT 0,
+                total_rsvps INTEGER DEFAULT 0
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS engagement_nudges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                nudge_type TEXT NOT NULL,
+                sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS milestones (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                milestone_type TEXT NOT NULL,
+                milestone_value INTEGER NOT NULL,
+                celebrated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Indexes for faster lookups
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_options_poll ON options(poll_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_votes_poll ON votes(poll_id)")
@@ -238,10 +352,17 @@ def init_db():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_outreach_recipients_campaign ON outreach_recipients(campaign_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_outreach_recipients_status ON outreach_recipients(status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_outreach_campaigns_status ON outreach_campaigns(status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_activity_last_seen ON user_activity(last_seen)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_engagement_nudges_user ON engagement_nudges(user_id, nudge_type)")
+
+        # Run any pending migrations for existing databases
+        _run_migrations(conn)
+        logger.info("Database initialized successfully")
 
 
 def create_poll(question: str, creator_id: str, channel_id: str,
-                options: list[str], closes_at: Optional[datetime] = None) -> int:
+                options: list[str], closes_at: Optional[datetime] = None,
+                anonymous: bool = False) -> int:
     """
     Create a new poll with options.
     Returns the poll ID.
@@ -250,9 +371,9 @@ def create_poll(question: str, creator_id: str, channel_id: str,
         cursor = conn.cursor()
 
         cursor.execute("""
-            INSERT INTO polls (question, creator_id, channel_id, closes_at)
-            VALUES (?, ?, ?, ?)
-        """, (question, creator_id, channel_id, closes_at))
+            INSERT INTO polls (question, creator_id, channel_id, closes_at, anonymous)
+            VALUES (?, ?, ?, ?, ?)
+        """, (question, creator_id, channel_id, closes_at, 1 if anonymous else 0))
 
         poll_id = cursor.lastrowid
 
@@ -1093,7 +1214,7 @@ def add_pending_opportunity(opp: dict):
         """, (opp["guid"], opp["title"], opp["link"], opp.get("summary", "")))
 
 
-def get_pending_opportunity(guid: str) -> dict | None:
+def get_pending_opportunity(guid: str) -> Optional[dict]:
     """Get a single pending opportunity by guid."""
     with get_db() as conn:
         cursor = conn.cursor()
@@ -1123,3 +1244,377 @@ def remove_pending_opportunity(guid: str):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM pending_opportunities WHERE guid = ?", (guid,))
+
+
+# ============================================================================
+# RSVP TOGGLE (Phase 2)
+# ============================================================================
+
+def delete_rsvp(event_id: int, user_id: str) -> bool:
+    """Remove a user's RSVP entirely. Returns True if deleted."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM rsvps WHERE event_id = ? AND user_id = ?", (event_id, user_id))
+        return cursor.rowcount > 0
+
+
+# ============================================================================
+# DATABASE OPERATIONS (Phase 4)
+# ============================================================================
+
+def get_db_size() -> str:
+    """Get the database file size as a human-readable string."""
+    try:
+        size = os.path.getsize(DATABASE_PATH)
+        if size < 1024:
+            return f"{size} B"
+        elif size < 1024 * 1024:
+            return f"{size / 1024:.1f} KB"
+        else:
+            return f"{size / (1024 * 1024):.1f} MB"
+    except OSError:
+        return "unknown"
+
+
+def get_db_stats() -> dict:
+    """Get row counts per table for health monitoring."""
+    tables = ["polls", "votes", "events", "rsvps", "processed_members",
+              "outreach_campaigns", "posted_opportunities", "pending_opportunities",
+              "user_activity"]
+    stats = {}
+    with get_db() as conn:
+        cursor = conn.cursor()
+        for table in tables:
+            try:
+                cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                stats[table] = cursor.fetchone()[0]
+            except Exception:
+                stats[table] = 0
+    return stats
+
+
+def backup_database() -> Optional[str]:
+    """Create a timestamped backup of the database. Returns backup path or None on failure."""
+    try:
+        if not os.path.exists(DATABASE_PATH):
+            return None
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = f"{DATABASE_PATH}.bak.{timestamp}"
+        shutil.copy2(DATABASE_PATH, backup_path)
+        logger.info(f"Database backed up to {backup_path}")
+
+        # Keep only the last 7 backups
+        import glob
+        backups = sorted(glob.glob(f"{DATABASE_PATH}.bak.*"))
+        while len(backups) > 7:
+            oldest = backups.pop(0)
+            try:
+                os.remove(oldest)
+                logger.info(f"Removed old backup {oldest}")
+            except OSError:
+                pass
+
+        return backup_path
+    except Exception as e:
+        logger.error(f"Database backup failed: {e}")
+        return None
+
+
+# ============================================================================
+# ANALYTICS (Phase 5)
+# ============================================================================
+
+def get_poll_analytics() -> dict:
+    """Get poll engagement analytics."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total_polls,
+                SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) as closed_polls,
+                SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as open_polls
+            FROM polls
+        """)
+        row = cursor.fetchone()
+        result = dict(row) if row else {}
+
+        cursor.execute("SELECT COUNT(*) as total_votes FROM votes")
+        result["total_votes"] = cursor.fetchone()["total_votes"]
+
+        cursor.execute("SELECT COUNT(DISTINCT user_id) as unique_voters FROM votes")
+        result["unique_voters"] = cursor.fetchone()["unique_voters"]
+
+        total_polls = result.get("total_polls", 0) or 0
+        total_votes = result.get("total_votes", 0) or 0
+        result["avg_votes_per_poll"] = round(total_votes / total_polls, 1) if total_polls > 0 else 0
+
+        return result
+
+
+def get_event_analytics() -> dict:
+    """Get event engagement analytics."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total_events,
+                SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) as upcoming_events,
+                SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) as past_events
+            FROM events
+        """)
+        row = cursor.fetchone()
+        result = dict(row) if row else {}
+
+        cursor.execute("SELECT COUNT(*) as total_rsvps FROM rsvps")
+        result["total_rsvps"] = cursor.fetchone()["total_rsvps"]
+
+        cursor.execute("""
+            SELECT COUNT(*) as total_going FROM rsvps WHERE response = 'going'
+        """)
+        result["total_going"] = cursor.fetchone()["total_going"]
+
+        total_events = result.get("total_events", 0) or 0
+        total_rsvps = result.get("total_rsvps", 0) or 0
+        result["avg_rsvps_per_event"] = round(total_rsvps / total_events, 1) if total_events > 0 else 0
+
+        return result
+
+
+def get_onboarding_trends() -> dict:
+    """Get onboarding trends."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        # Members this month
+        cursor.execute("""
+            SELECT COUNT(*) as this_month FROM processed_members
+            WHERE created_at >= date('now', 'start of month')
+        """)
+        this_month = cursor.fetchone()["this_month"]
+
+        # Members last month
+        cursor.execute("""
+            SELECT COUNT(*) as last_month FROM processed_members
+            WHERE created_at >= date('now', 'start of month', '-1 month')
+            AND created_at < date('now', 'start of month')
+        """)
+        last_month = cursor.fetchone()["last_month"]
+
+        # Conversion rate (email sent → joined slack)
+        cursor.execute("""
+            SELECT
+                SUM(email_sent) as emails_sent,
+                SUM(CASE WHEN slack_user_id IS NOT NULL THEN 1 ELSE 0 END) as joined
+            FROM processed_members
+        """)
+        row = cursor.fetchone()
+        emails_sent = row["emails_sent"] or 0
+        joined = row["joined"] or 0
+        conversion = round(joined / emails_sent * 100, 1) if emails_sent > 0 else 0
+
+        return {
+            "this_month": this_month,
+            "last_month": last_month,
+            "conversion_rate": conversion,
+            "emails_sent": emails_sent,
+            "joined_slack": joined,
+        }
+
+
+# ============================================================================
+# ENGAGEMENT SYSTEM (Phase 6)
+# ============================================================================
+
+def record_user_activity(user_id: str, activity_type: str):
+    """Record a user's activity. activity_type: 'poll_vote', 'rsvp', 'message'."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        now = datetime.now().isoformat()
+
+        # Upsert user_activity row
+        cursor.execute("""
+            INSERT INTO user_activity (user_id, last_seen)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET last_seen = ?
+        """, (user_id, now, now))
+
+        if activity_type == "poll_vote":
+            cursor.execute("""
+                UPDATE user_activity
+                SET last_poll_vote = ?, total_votes = total_votes + 1
+                WHERE user_id = ?
+            """, (now, user_id))
+        elif activity_type == "rsvp":
+            cursor.execute("""
+                UPDATE user_activity
+                SET last_rsvp = ?, total_rsvps = total_rsvps + 1
+                WHERE user_id = ?
+            """, (now, user_id))
+        elif activity_type == "message":
+            cursor.execute("""
+                UPDATE user_activity SET last_message = ? WHERE user_id = ?
+            """, (now, user_id))
+
+
+def get_inactive_users(days: int = 30) -> list[dict]:
+    """Get users who haven't been active in N days."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM user_activity
+            WHERE last_seen < datetime('now', ? || ' days')
+            ORDER BY last_seen ASC
+        """, (f"-{days}",))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_user_engagement_stats() -> dict:
+    """Get aggregate engagement statistics for admin view."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT COUNT(*) as total FROM user_activity")
+        total = cursor.fetchone()["total"]
+
+        # Active: seen in last 7 days
+        cursor.execute("""
+            SELECT COUNT(*) as cnt FROM user_activity
+            WHERE last_seen >= datetime('now', '-7 days')
+        """)
+        active = cursor.fetchone()["cnt"]
+
+        # Semi-active: seen 7-30 days ago
+        cursor.execute("""
+            SELECT COUNT(*) as cnt FROM user_activity
+            WHERE last_seen < datetime('now', '-7 days')
+            AND last_seen >= datetime('now', '-30 days')
+        """)
+        semi_active = cursor.fetchone()["cnt"]
+
+        # Inactive: not seen in 30+ days
+        cursor.execute("""
+            SELECT COUNT(*) as cnt FROM user_activity
+            WHERE last_seen < datetime('now', '-30 days')
+        """)
+        inactive = cursor.fetchone()["cnt"]
+
+        # Never tracked (registered but no activity)
+        cursor.execute("""
+            SELECT COUNT(*) as cnt FROM processed_members
+            WHERE slack_user_id IS NOT NULL
+            AND slack_user_id NOT IN (SELECT user_id FROM user_activity)
+        """)
+        never_tracked = cursor.fetchone()["cnt"]
+
+        return {
+            "total_tracked": total,
+            "active_7d": active,
+            "semi_active_30d": semi_active,
+            "inactive_30d": inactive,
+            "never_tracked": never_tracked,
+        }
+
+
+def record_nudge_sent(user_id: str, nudge_type: str):
+    """Record that a nudge DM was sent."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO engagement_nudges (user_id, nudge_type)
+            VALUES (?, ?)
+        """, (user_id, nudge_type))
+
+
+def was_nudge_sent_recently(user_id: str, nudge_type: str, days: int = 14) -> bool:
+    """Check if a nudge was sent to a user within the cooldown period."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 1 FROM engagement_nudges
+            WHERE user_id = ? AND nudge_type = ?
+            AND sent_at >= datetime('now', ? || ' days')
+        """, (user_id, nudge_type, f"-{days}"))
+        return cursor.fetchone() is not None
+
+
+def get_next_milestone() -> Optional[int]:
+    """Check if member count crossed a milestone (50, 100, 150, ...).
+    Returns the milestone value if uncelebrated, None otherwise."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) as cnt FROM processed_members WHERE slack_user_id IS NOT NULL")
+        member_count = cursor.fetchone()["cnt"]
+
+        if member_count < 50:
+            return None
+
+        # Find the highest milestone that applies
+        milestone = (member_count // 50) * 50
+
+        # Check if already celebrated
+        cursor.execute("""
+            SELECT 1 FROM milestones
+            WHERE milestone_type = 'member_count' AND milestone_value = ?
+        """, (milestone,))
+        if cursor.fetchone():
+            return None
+
+        return milestone
+
+
+def record_milestone(milestone_type: str, milestone_value: int):
+    """Record that a milestone was celebrated."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO milestones (milestone_type, milestone_value)
+            VALUES (?, ?)
+        """, (milestone_type, milestone_value))
+
+
+def get_weekly_digest_data() -> dict:
+    """Gather data for the weekly community digest."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        # Upcoming events (next 14 days)
+        cursor.execute("""
+            SELECT id, title, event_datetime FROM events
+            WHERE status = 'open'
+            AND event_datetime > datetime('now')
+            AND event_datetime <= datetime('now', '+14 days')
+            ORDER BY event_datetime ASC LIMIT 5
+        """)
+        upcoming_events = [dict(row) for row in cursor.fetchall()]
+
+        # Active polls
+        cursor.execute("""
+            SELECT id, question FROM polls
+            WHERE status = 'open' LIMIT 5
+        """)
+        active_polls = [dict(row) for row in cursor.fetchall()]
+
+        # New members this week
+        cursor.execute("""
+            SELECT COUNT(*) as cnt FROM processed_members
+            WHERE created_at >= datetime('now', '-7 days')
+        """)
+        new_members = cursor.fetchone()["cnt"]
+
+        # Opportunities posted this week
+        cursor.execute("""
+            SELECT COUNT(*) as cnt FROM posted_opportunities
+            WHERE posted_at >= datetime('now', '-7 days')
+        """)
+        opportunities_this_week = cursor.fetchone()["cnt"]
+
+        # Total member count
+        cursor.execute("SELECT COUNT(*) as cnt FROM processed_members WHERE slack_user_id IS NOT NULL")
+        total_members = cursor.fetchone()["cnt"]
+
+        return {
+            "upcoming_events": upcoming_events,
+            "active_polls": active_polls,
+            "new_members": new_members,
+            "opportunities_this_week": opportunities_this_week,
+            "total_members": total_members,
+        }

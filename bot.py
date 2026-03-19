@@ -53,6 +53,13 @@ GOOGLE_GROUP_EMAIL = os.getenv("GOOGLE_GROUP_EMAIL", "")
 # RSS opportunities config
 JOBS_CHANNEL_ID = os.getenv("JOBS_CHANNEL_ID", "")
 
+# Engagement system config
+GENERAL_CHANNEL_ID = os.getenv("GENERAL_CHANNEL_ID", "")
+ENGAGEMENT_ENABLED = os.getenv("ENGAGEMENT_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# Bot start time for uptime tracking
+BOT_START_TIME = datetime.now()
+
 # Adzuna job API config (optional — free tier at developer.adzuna.com)
 ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID", "")
 ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY", "")
@@ -836,6 +843,10 @@ def handle_poll_creation(ack, body, client, view, logger):
         else:
             closes_at = datetime.strptime(f"{close_date} 23:59", "%Y-%m-%d %H:%M")
 
+    # Parse anonymous option
+    anonymous_opts = values.get("anonymous_block", {}).get("anonymous_input", {}).get("selected_options", [])
+    anonymous = any(opt.get("value") == "anonymous" for opt in anonymous_opts)
+
     # Get user and channel info
     user_id = body["user"]["id"]
     # Get channel_id from private_metadata (set when modal was opened)
@@ -848,7 +859,8 @@ def handle_poll_creation(ack, body, client, view, logger):
             creator_id=user_id,
             channel_id=channel_id,
             options=options,
-            closes_at=closes_at
+            closes_at=closes_at,
+            anonymous=anonymous
         )
 
         # Get fresh data for building message
@@ -864,7 +876,8 @@ def handle_poll_creation(ack, body, client, view, logger):
             options=poll_options,
             results=results,
             closes_at=closes_at,
-            status="open"
+            status="open",
+            anonymous=anonymous
         )
 
         # Post to channel
@@ -1095,6 +1108,10 @@ def handle_vote(ack, body, client, logger):
         # Update votes in database
         db.set_user_votes(poll_id, user_id, selected_ids)
 
+        # Track activity
+        if ENGAGEMENT_ENABLED:
+            db.record_user_activity(user_id, "poll_vote")
+
         # Refresh poll message
         update_poll_message(client, poll_id)
 
@@ -1129,7 +1146,8 @@ def handle_view_results(ack, body, client, logger):
             question=poll["question"],
             results=results,
             total_voters=total_voters,
-            status=poll["status"]
+            status=poll["status"],
+            anonymous=bool(poll.get("anonymous"))
         )
 
         client.views_open(
@@ -1228,11 +1246,21 @@ def _handle_rsvp(body, client, logger, response: str):
         # Toggle: if user clicks same response, remove their RSVP
         current = db.get_user_rsvp(event_id, user_id)
         if current == response:
-            # Remove RSVP by setting to not_going (or we could delete, but this is simpler)
-            # Actually let's just keep it — clicking same button is a no-op for simplicity
-            pass
+            db.delete_rsvp(event_id, user_id)
+            client.chat_postEphemeral(
+                channel=body["channel"]["id"], user=user_id,
+                text=f":white_check_mark: Your RSVP has been removed."
+            )
         else:
             db.set_rsvp(event_id, user_id, response)
+            client.chat_postEphemeral(
+                channel=body["channel"]["id"], user=user_id,
+                text=f":white_check_mark: You RSVP'd *{response.replace('_', ' ').title()}*."
+            )
+
+        # Track activity
+        if ENGAGEMENT_ENABLED:
+            db.record_user_activity(user_id, "rsvp")
 
         _update_event_message(client, event_id)
         logger.info(f"User {user_id} RSVP'd '{response}' for event {event_id}")
@@ -1689,7 +1717,8 @@ def update_poll_message(client, poll_id: int):
             options=poll_options,
             results=results,
             closes_at=closes_at,
-            status=poll["status"]
+            status=poll["status"],
+            anonymous=bool(poll.get("anonymous"))
         )
 
         client.chat_update(
@@ -1719,7 +1748,8 @@ def close_and_update_poll(client, poll_id: int):
             question=poll["question"],
             creator_id=poll["creator_id"],
             results=results,
-            total_voters=total_voters
+            total_voters=total_voters,
+            anonymous=bool(poll.get("anonymous"))
         )
 
         # Update original message
@@ -2117,6 +2147,236 @@ def refresh_rss_queue():
 
 
 # ============================================================================
+# NEW SLASH COMMANDS — Phases 3-6
+# ============================================================================
+
+@app.command("/help")
+def handle_help_command(ack, body, client, logger):
+    """Show all available bot commands."""
+    ack()
+    help_blocks = blocks.build_help_blocks()
+    client.chat_postEphemeral(
+        channel=body.get("channel_id", body["user_id"]),
+        user=body["user_id"],
+        blocks=help_blocks,
+        text="MeetPoll Bot Help"
+    )
+
+
+@app.command("/status")
+def handle_status_command(ack, body, client, logger):
+    """Bot health check (admin only)."""
+    ack()
+    user_id = body["user_id"]
+    channel_id = body.get("channel_id", user_id)
+
+    if not _is_onboard_authorized(user_id):
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":no_entry: You don't have permission to use this command."
+        )
+        return
+
+    uptime_delta = datetime.now() - BOT_START_TIME
+    days = uptime_delta.days
+    hours, remainder = divmod(uptime_delta.seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+    uptime_str = f"{days}d {hours}h {minutes}m"
+
+    status_blocks = blocks.build_status_blocks(
+        uptime=uptime_str,
+        db_size=db.get_db_size(),
+        db_stats=db.get_db_stats(),
+        scheduler_jobs=len(scheduler.get_jobs()),
+        pending_queue=db.count_pending_opportunities()
+    )
+    client.chat_postEphemeral(
+        channel=channel_id, user=user_id,
+        blocks=status_blocks, text="Bot status"
+    )
+
+
+@app.command("/analytics")
+def handle_analytics_command(ack, body, client, logger):
+    """Show community analytics (admin only)."""
+    ack()
+    user_id = body["user_id"]
+    channel_id = body.get("channel_id", user_id)
+
+    if not _is_onboard_authorized(user_id):
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":no_entry: You don't have permission to use this command."
+        )
+        return
+
+    analytics_blocks = blocks.build_analytics_blocks(
+        poll_stats=db.get_poll_analytics(),
+        event_stats=db.get_event_analytics(),
+        onboarding=db.get_onboarding_trends()
+    )
+    client.chat_postEphemeral(
+        channel=channel_id, user=user_id,
+        blocks=analytics_blocks, text="Community analytics"
+    )
+
+
+@app.command("/engage")
+def handle_engage_command(ack, body, client, logger):
+    """Engagement management (admin only)."""
+    ack()
+    text = (body.get("text") or "").strip().lower()
+    user_id = body["user_id"]
+    channel_id = body.get("channel_id", user_id)
+
+    if not _is_onboard_authorized(user_id):
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":no_entry: You don't have permission to use this command."
+        )
+        return
+
+    if text == "stats":
+        stats = db.get_user_engagement_stats()
+        stats_blocks = blocks.build_engagement_stats_blocks(stats)
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            blocks=stats_blocks, text="Engagement stats"
+        )
+
+    elif text == "inactive":
+        inactive = db.get_inactive_users(days=30)
+        inactive_blocks = blocks.build_inactive_users_blocks(inactive)
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            blocks=inactive_blocks, text="Inactive users"
+        )
+
+    elif text == "nudge":
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":hourglass_flowing_sand: Sending re-engagement nudges..."
+        )
+        count = _send_engagement_nudges()
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=f":white_check_mark: Sent {count} nudge(s)."
+        )
+
+    elif text == "digest":
+        _post_weekly_digest()
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":white_check_mark: Weekly digest posted."
+        )
+
+    else:
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=(
+                "Usage:\n"
+                "  `/engage stats` \u2014 engagement breakdown\n"
+                "  `/engage inactive` \u2014 list inactive members\n"
+                "  `/engage nudge` \u2014 send re-engagement nudges\n"
+                "  `/engage digest` \u2014 trigger weekly digest"
+            )
+        )
+
+
+# ============================================================================
+# ENGAGEMENT SYSTEM FUNCTIONS — Phase 6
+# ============================================================================
+
+def _post_weekly_digest():
+    """Post the weekly community digest to GENERAL_CHANNEL_ID."""
+    if not GENERAL_CHANNEL_ID:
+        logger.warning("GENERAL_CHANNEL_ID not set, skipping weekly digest")
+        return
+    try:
+        data = db.get_weekly_digest_data()
+        digest_blocks = blocks.build_weekly_digest_blocks(data)
+        app.client.chat_postMessage(
+            channel=GENERAL_CHANNEL_ID,
+            blocks=digest_blocks,
+            text="Weekly Community Digest"
+        )
+        logger.info("Posted weekly digest")
+    except Exception as e:
+        logger.error(f"Error posting weekly digest: {e}")
+
+
+def _send_engagement_nudges() -> int:
+    """Send re-engagement DMs to inactive users. Returns count sent."""
+    count = 0
+    try:
+        inactive = db.get_inactive_users(days=30)
+        digest_data = db.get_weekly_digest_data()
+
+        for user in inactive[:5]:  # Max 5 nudges per run
+            user_id = user["user_id"]
+
+            if db.was_nudge_sent_recently(user_id, "reengagement", days=14):
+                continue
+
+            # Try to get user's first name
+            first_name = ""
+            try:
+                user_info = app.client.users_info(user=user_id)
+                first_name = user_info["user"]["profile"].get("first_name", "")
+            except Exception:
+                pass
+
+            nudge_blocks = blocks.build_nudge_dm_blocks(first_name, digest_data)
+            try:
+                app.client.chat_postMessage(
+                    channel=user_id,
+                    blocks=nudge_blocks,
+                    text="We miss you in the community!"
+                )
+                db.record_nudge_sent(user_id, "reengagement")
+                count += 1
+                logger.info(f"Sent re-engagement nudge to {user_id}")
+            except Exception as e:
+                logger.warning(f"Could not send nudge to {user_id}: {e}")
+
+    except Exception as e:
+        logger.error(f"Error sending engagement nudges: {e}")
+    return count
+
+
+def _check_milestones():
+    """Check if any membership milestones should be celebrated."""
+    if not GENERAL_CHANNEL_ID:
+        return
+    try:
+        milestone = db.get_next_milestone()
+        if milestone:
+            data = db.get_weekly_digest_data()
+            milestone_blocks = blocks.build_milestone_blocks(
+                milestone_value=milestone,
+                total_members=data["total_members"]
+            )
+            app.client.chat_postMessage(
+                channel=GENERAL_CHANNEL_ID,
+                blocks=milestone_blocks,
+                text=f"\ud83c\udf89 {milestone} Members Milestone!"
+            )
+            db.record_milestone("member_count", milestone)
+            logger.info(f"Celebrated milestone: {milestone} members")
+    except Exception as e:
+        logger.error(f"Error checking milestones: {e}")
+
+
+def _daily_backup():
+    """Perform daily database backup."""
+    backup_path = db.backup_database()
+    if backup_path:
+        logger.info(f"Daily backup completed: {backup_path}")
+    else:
+        logger.warning("Daily backup failed or was skipped")
+
+
+# ============================================================================
 # MAIN ENTRY POINT
 # ============================================================================
 
@@ -2140,8 +2400,17 @@ def main():
     scheduler.add_job(check_event_reminders, "interval", minutes=5)
     scheduler.add_job(check_past_events, "interval", minutes=10)
     scheduler.add_job(refresh_rss_queue, "cron", hour="10,22", minute=0)
+
+    # Engagement system jobs
+    if ENGAGEMENT_ENABLED:
+        scheduler.add_job(_daily_backup, "cron", hour=3, minute=0, id="daily_backup")
+        scheduler.add_job(_post_weekly_digest, "cron", day_of_week="mon", hour=10, minute=0, id="weekly_digest")
+        scheduler.add_job(_send_engagement_nudges, "cron", day_of_week="wed", hour=14, minute=0, id="engagement_nudges")
+        scheduler.add_job(_check_milestones, "cron", hour="*/6", id="milestone_check")
+        logger.info("Engagement system enabled (digest, nudges, milestones, backup)")
+
     scheduler.start()
-    logger.info("Scheduler started (polls, registrations, events, RSS opportunities)")
+    logger.info("Scheduler started")
 
     # Get app-level token for Socket Mode
     app_token = os.environ.get("SLACK_APP_TOKEN")

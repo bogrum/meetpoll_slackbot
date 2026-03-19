@@ -1,6 +1,7 @@
 """
 Block Kit UI builders for MeetPoll bot.
-Creates interactive Slack message components for polls, events, and onboarding.
+Creates interactive Slack message components for polls, events, onboarding,
+analytics, and engagement features.
 """
 
 from datetime import datetime
@@ -69,6 +70,22 @@ def build_poll_modal(trigger_id: str = None) -> dict:
                     "placeholder": {"type": "plain_text", "text": "Select time"}
                 },
                 "label": {"type": "plain_text", "text": "Close Time (optional)"}
+            },
+            {
+                "type": "input",
+                "block_id": "anonymous_block",
+                "optional": True,
+                "element": {
+                    "type": "checkboxes",
+                    "action_id": "anonymous_input",
+                    "options": [
+                        {
+                            "text": {"type": "plain_text", "text": "Make poll anonymous (voter names hidden)"},
+                            "value": "anonymous"
+                        }
+                    ]
+                },
+                "label": {"type": "plain_text", "text": "Privacy"}
             }
         ]
     }
@@ -76,7 +93,8 @@ def build_poll_modal(trigger_id: str = None) -> dict:
 
 def build_poll_message(poll_id: int, question: str, creator_id: str,
                        options: list[dict], results: list[dict],
-                       closes_at: Optional[datetime], status: str) -> list[dict]:
+                       closes_at: Optional[datetime], status: str,
+                       anonymous: bool = False) -> list[dict]:
     """
     Build the poll message with voting checkboxes.
 
@@ -88,6 +106,7 @@ def build_poll_message(poll_id: int, question: str, creator_id: str,
         results: List of result dicts with vote_count, voters
         closes_at: Optional close datetime
         status: 'open' or 'closed'
+        anonymous: If True, hide voter names in results
     """
     blocks = []
 
@@ -111,6 +130,11 @@ def build_poll_message(poll_id: int, question: str, creator_id: str,
     if status == "closed":
         context_elements.append(
             {"type": "mrkdwn", "text": ":lock: *Poll Closed*"}
+        )
+
+    if anonymous:
+        context_elements.append(
+            {"type": "mrkdwn", "text": ":detective: *Anonymous Poll*"}
         )
 
     blocks.append({"type": "context", "elements": context_elements})
@@ -198,7 +222,8 @@ def build_poll_message(poll_id: int, question: str, creator_id: str,
 
 
 def build_results_modal(poll_id: int, question: str, results: list[dict],
-                        total_voters: int, status: str) -> dict:
+                        total_voters: int, status: str,
+                        anonymous: bool = False) -> dict:
     """Build a modal showing detailed poll results."""
     blocks = []
 
@@ -231,7 +256,9 @@ def build_results_modal(poll_id: int, question: str, results: list[dict],
         bar_length = min(vote_count, 20)
         bar = ":blue_square:" * bar_length if bar_length > 0 else ":white_square:"
 
-        if voters:
+        if anonymous:
+            text = f"{prefix}*{option_text}*\n{bar} {vote_count}"
+        elif voters:
             voter_mentions = ", ".join([f"<@{v}>" for v in voters])
             text = f"{prefix}*{option_text}*\n{bar} {vote_count}\n_{voter_mentions}_"
         else:
@@ -251,7 +278,8 @@ def build_results_modal(poll_id: int, question: str, results: list[dict],
 
 
 def build_closed_poll_message(poll_id: int, question: str, creator_id: str,
-                              results: list[dict], total_voters: int) -> list[dict]:
+                              results: list[dict], total_voters: int,
+                              anonymous: bool = False) -> list[dict]:
     """Build the final results message for a closed poll."""
     blocks = []
 
@@ -308,11 +336,11 @@ def build_closed_poll_message(poll_id: int, question: str, creator_id: str,
 
         prefix = ":first_place_medal: " if vote_count == max_votes and vote_count > 0 else ""
 
-        if voters:
+        if voters and not anonymous:
             voter_mentions = ", ".join([f"<@{v}>" for v in voters])
             text = f"{prefix}*{option_text}* ({vote_count})\n{voter_mentions}"
         else:
-            text = f"*{option_text}* (0)"
+            text = f"{prefix}*{option_text}* ({vote_count})"
 
         blocks.append({
             "type": "section",
@@ -1024,3 +1052,349 @@ def build_outreach_detail_blocks(campaign: dict, recipients: list[dict]) -> list
         })
 
     return result_blocks
+
+
+# ============================================================================
+# HELP — Phase 3
+# ============================================================================
+
+def build_help_blocks() -> list[dict]:
+    """Build a help message listing all available bot commands."""
+    return [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": ":robot_face: MeetPoll Bot — Commands", "emoji": True}
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*:calendar: Polls & Events*\n"
+                    "• `/meetpoll` — Create a new meeting poll\n"
+                    "• `/event` — Create a new event with RSVPs\n"
+                    "• `/mypolls` — View your active polls\n"
+                    "• `/myevents` — View your active events"
+                )
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*:busts_in_silhouette: Onboarding*\n"
+                    "• `/onboard status` — Check onboarding status\n"
+                    "• `/onboard run` — Manually trigger onboarding\n"
+                    "• `/onboard mappings` — View committee channel mappings"
+                )
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*:email: Outreach*\n"
+                    "• `/outreach academics` — Email outreach to academics\n"
+                    "• `/outreach clubs` — Email outreach to clubs\n"
+                    "• `/outreach status` — View outreach statistics\n"
+                    "• `/outreach history` — View past campaigns"
+                )
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*:chart_with_upwards_trend: Analytics & Engagement*\n"
+                    "• `/analytics` — View community analytics\n"
+                    "• `/engage stats` — Engagement breakdown\n"
+                    "• `/engage inactive` — List inactive members\n"
+                    "• `/engage nudge` — Send re-engagement nudges\n"
+                    "• `/engage digest` — Trigger weekly digest"
+                )
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*:wrench: Admin*\n"
+                    "• `/status` — Bot health check\n"
+                    "• `/help` — Show this help message"
+                )
+            }
+        },
+    ]
+
+
+# ============================================================================
+# STATUS — Phase 4
+# ============================================================================
+
+def build_status_blocks(uptime: str, db_size: str, db_stats: dict,
+                        scheduler_jobs: int, pending_queue: int) -> list[dict]:
+    """Build a health check status message."""
+    stats_lines = "\n".join([f"• `{table}`: {count}" for table, count in db_stats.items()])
+    return [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": ":heartbeat: Bot Health Check", "emoji": True}
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Uptime:*\n{uptime}"},
+                {"type": "mrkdwn", "text": f"*Database:*\n{db_size}"},
+                {"type": "mrkdwn", "text": f"*Scheduler Jobs:*\n{scheduler_jobs}"},
+                {"type": "mrkdwn", "text": f"*Pending Opportunities:*\n{pending_queue}"},
+            ]
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Table Row Counts:*\n{stats_lines}"}
+        }
+    ]
+
+
+# ============================================================================
+# ANALYTICS — Phase 5
+# ============================================================================
+
+def build_analytics_blocks(poll_stats: dict, event_stats: dict,
+                           onboarding: dict) -> list[dict]:
+    """Build the analytics dashboard display."""
+    return [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": ":bar_chart: Community Analytics", "emoji": True}
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    ":ballot_box: *Polls*\n"
+                    f"• Total: {poll_stats.get('total_polls', 0)} ({poll_stats.get('open_polls', 0)} open)\n"
+                    f"• Total votes: {poll_stats.get('total_votes', 0)}\n"
+                    f"• Unique voters: {poll_stats.get('unique_voters', 0)}\n"
+                    f"• Avg votes/poll: {poll_stats.get('avg_votes_per_poll', 0)}"
+                )
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    ":date: *Events*\n"
+                    f"• Total: {event_stats.get('total_events', 0)} ({event_stats.get('upcoming_events', 0)} upcoming)\n"
+                    f"• Total RSVPs: {event_stats.get('total_rsvps', 0)}\n"
+                    f"• Going RSVPs: {event_stats.get('total_going', 0)}\n"
+                    f"• Avg RSVPs/event: {event_stats.get('avg_rsvps_per_event', 0)}"
+                )
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    ":wave: *Onboarding*\n"
+                    f"• This month: {onboarding.get('this_month', 0)}\n"
+                    f"• Last month: {onboarding.get('last_month', 0)}\n"
+                    f"• Emails sent → Joined Slack: {onboarding.get('emails_sent', 0)} → {onboarding.get('joined_slack', 0)}\n"
+                    f"• Conversion rate: {onboarding.get('conversion_rate', 0)}%"
+                )
+            }
+        }
+    ]
+
+
+# ============================================================================
+# ENGAGEMENT — Phase 6
+# ============================================================================
+
+def build_engagement_stats_blocks(stats: dict) -> list[dict]:
+    """Build engagement statistics for admin view."""
+    total = stats.get("total_tracked", 0)
+    active = stats.get("active_7d", 0)
+    semi = stats.get("semi_active_30d", 0)
+    inactive = stats.get("inactive_30d", 0)
+    never = stats.get("never_tracked", 0)
+
+    return [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": ":people_holding_hands: Engagement Dashboard", "emoji": True}
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*:green_circle: Active (7d):*\n{active}"},
+                {"type": "mrkdwn", "text": f"*:yellow_circle: Semi-active (7-30d):*\n{semi}"},
+                {"type": "mrkdwn", "text": f"*:red_circle: Inactive (30d+):*\n{inactive}"},
+                {"type": "mrkdwn", "text": f"*:white_circle: Never tracked:*\n{never}"},
+            ]
+        },
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": f"Total tracked users: {total}"}
+            ]
+        }
+    ]
+
+
+def build_inactive_users_blocks(users: list[dict]) -> list[dict]:
+    """Build a list of inactive users for admin view."""
+    if not users:
+        return [{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": ":tada: No inactive users! Everyone has been active in the last 30 days."}
+        }]
+
+    result = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": ":zzz: Inactive Members (30+ days)", "emoji": True}
+        },
+        {"type": "divider"}
+    ]
+
+    lines = []
+    for u in users[:20]:  # Cap at 20 to stay under Slack limits
+        last_seen = u.get("last_seen", "unknown")[:10]
+        lines.append(f"• <@{u['user_id']}> — last seen: _{last_seen}_")
+
+    result.append({
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": "\n".join(lines)}
+    })
+
+    if len(users) > 20:
+        result.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"_...and {len(users) - 20} more_"}]
+        })
+
+    return result
+
+
+def build_weekly_digest_blocks(data: dict) -> list[dict]:
+    """Build the weekly community digest message."""
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": ":newspaper: Weekly Community Digest", "emoji": True}
+        },
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f":busts_in_silhouette: *{data.get('total_members', 0)}* total members | *{data.get('new_members', 0)}* joined this week"}]
+        },
+        {"type": "divider"}
+    ]
+
+    # Upcoming events
+    events = data.get("upcoming_events", [])
+    if events:
+        event_lines = []
+        for e in events:
+            dt = e.get("event_datetime", "")[:16]
+            event_lines.append(f"• *{e['title']}* — {dt}")
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": ":date: *Upcoming Events*\n" + "\n".join(event_lines)}
+        })
+    else:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": ":date: *Upcoming Events*\nNo upcoming events — why not create one with `/event`?"}
+        })
+
+    # Active polls
+    polls = data.get("active_polls", [])
+    if polls:
+        poll_lines = [f"• {p['question']}" for p in polls]
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": ":ballot_box: *Active Polls*\n" + "\n".join(poll_lines)}
+        })
+
+    # Opportunities
+    opp_count = data.get("opportunities_this_week", 0)
+    if opp_count:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f":briefcase: *{opp_count}* new opportunities posted this week"}
+        })
+
+    blocks.append({"type": "divider"})
+    blocks.append({
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": "_Posted automatically by MeetPoll Bot every Monday_"}]
+    })
+
+    return blocks
+
+
+def build_nudge_dm_blocks(first_name: str, digest_data: dict) -> list[dict]:
+    """Build a friendly re-engagement DM."""
+    name = first_name or "there"
+    event_count = len(digest_data.get("upcoming_events", []))
+    poll_count = len(digest_data.get("active_polls", []))
+    opp_count = digest_data.get("opportunities_this_week", 0)
+
+    highlights = []
+    if event_count:
+        highlights.append(f":date: {event_count} upcoming event{'s' if event_count != 1 else ''}")
+    if poll_count:
+        highlights.append(f":ballot_box: {poll_count} active poll{'s' if poll_count != 1 else ''}")
+    if opp_count:
+        highlights.append(f":briefcase: {opp_count} new opportunity posts this week")
+
+    highlights_text = "\n".join(highlights) if highlights else "Check out the latest discussions!"
+
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"Hey {name}! :wave:\n\n"
+                    f"We haven't seen you around in a while and we miss you! "
+                    f"Here's what's been happening in the community:\n\n"
+                    f"{highlights_text}\n\n"
+                    f"Come say hi! :blush:"
+                )
+            }
+        }
+    ]
+
+
+def build_milestone_blocks(milestone_value: int, total_members: int) -> list[dict]:
+    """Build a milestone celebration message."""
+    return [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f":tada: {milestone_value} Members Milestone!", "emoji": True}
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"We just crossed *{milestone_value} members*! :partying_face:\n\n"
+                    f"Our community now has *{total_members}* members and growing. "
+                    f"Thank you all for being part of this journey! :heart:"
+                )
+            }
+        }
+    ]
