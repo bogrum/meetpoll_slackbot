@@ -57,6 +57,9 @@ JOBS_CHANNEL_ID = os.getenv("JOBS_CHANNEL_ID", "")
 GENERAL_CHANNEL_ID = os.getenv("GENERAL_CHANNEL_ID", "")
 ENGAGEMENT_ENABLED = os.getenv("ENGAGEMENT_ENABLED", "true").lower() in ("true", "1", "yes")
 
+# Google Calendar sync
+GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID", "")
+
 # Bot start time for uptime tracking
 BOT_START_TIME = datetime.now()
 
@@ -1692,7 +1695,7 @@ def _send_welcome_dm(client, slack_user_id: str, first_name: str,
             })
 
         membership_choice = (member.get("membership_choice") or "") if member else ""
-        upcoming = db.get_upcoming_events(limit=2)
+        upcoming = db.get_all_upcoming_events(limit=2)
 
         dm_blocks = blocks.build_welcome_dm_blocks(
             first_name=first_name or "there",
@@ -2419,6 +2422,22 @@ def _check_milestones():
         logger.error(f"Error checking milestones: {e}")
 
 
+def sync_calendar_events():
+    """Fetch upcoming events from Google Calendar and sync to local DB."""
+    if not GOOGLE_CALENDAR_ID:
+        return
+    try:
+        events = sheets.fetch_upcoming_calendar_events(days_ahead=60)
+        synced = 0
+        for ev in events:
+            db.upsert_calendar_event(ev)
+            synced += 1
+        db.prune_stale_calendar_events()
+        logger.info(f"Calendar sync: {synced} events upserted")
+    except Exception as e:
+        logger.error(f"Calendar sync failed: {e}")
+
+
 def _daily_backup():
     """Perform daily database backup."""
     backup_path = db.backup_database()
@@ -2452,6 +2471,9 @@ def main():
     scheduler.add_job(check_event_reminders, "interval", minutes=5)
     scheduler.add_job(check_past_events, "interval", minutes=10)
     scheduler.add_job(refresh_rss_queue, "cron", hour="10,22", minute=0)
+    if GOOGLE_CALENDAR_ID:
+        scheduler.add_job(sync_calendar_events, "interval", hours=6, id="calendar_sync")
+        sync_calendar_events()  # Run once at startup
 
     # Engagement system jobs
     if ENGAGEMENT_ENABLED:
