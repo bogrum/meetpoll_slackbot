@@ -400,8 +400,8 @@ def build_welcome_dm_blocks(first_name: str,
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    f"Merhaba {first_name}! Topluluğumuza katıldığın için çok mutluyuz.\n"
-                    f"Hi {first_name}! We're so glad you joined our community."
+                    f"Merhaba{' ' + first_name if first_name else ''}! Topluluğumuza katıldığın için çok mutluyuz.\n"
+                    f"Hi{' ' + first_name if first_name else ''}! We're so glad you joined our community."
                 )
             }
         },
@@ -474,13 +474,40 @@ def build_welcome_dm_blocks(first_name: str,
             }
         })
 
+    general_ref = f"<#{general_channel_id}>" if general_channel_id else "#general"
+    result.append({"type": "divider"})
+    result.append({
+        "type": "section",
+        "text": {
+            "type": "mrkdwn",
+            "text": (
+                ":compass: *Topluluk Kanalları / Community Channels:*
+"
+                f"• {general_ref} — Duyurular / Announcements
+"
+                "• #chit_chat-geyik — Sohbet, gündelik konuşmalar / Casual chat
+"
+                "• #jobs_internship — İş & staj ilanları, paylaşabilirsin de / Jobs & internships, feel free to share
+"
+                "• #networking — Bağlantı kur, tanış / Connect with others
+"
+                "• #scientific_events — Bilimsel etkinlikler / Scientific events
+"
+                "• #help_discussion — Akademik destek & sorular / Academic help & questions
+"
+                "• #articles__resources — Makale & kaynak paylaşımı / Articles & resources"
+            )
+        }
+    })
+
     result.append({"type": "divider"})
     result.append({
         "type": "context",
         "elements": [{
             "type": "mrkdwn",
             "text": (
-                "Herhangi bir sorun olursa bu DM üzerinden bize ulaşabilirsin. :slightly_smiling_face:\n"
+                "Herhangi bir sorun olursa bu DM üzerinden bize ulaşabilirsin. :slightly_smiling_face:
+"
                 "Feel free to reach out here anytime. — *RSG-Türkiye*"
             )
         }]

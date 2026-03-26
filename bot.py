@@ -1698,7 +1698,7 @@ def _send_welcome_dm(client, slack_user_id: str, first_name: str,
         upcoming = db.get_all_upcoming_events(limit=2)
 
         dm_blocks = blocks.build_welcome_dm_blocks(
-            first_name=first_name or "there",
+            first_name=first_name or "",
             committees_with_channels=committees_with_channels,
             membership_choice=membership_choice,
             upcoming_events=upcoming,
@@ -2190,7 +2190,7 @@ def handle_help_command(ack, body, client, logger):
     )
 
 
-@app.command("/status")
+@app.command("/botstatus")
 def handle_status_command(ack, body, client, logger):
     """Bot health check (admin only)."""
     ack()
@@ -2335,6 +2335,54 @@ def handle_engage_command(ack, body, client, logger):
                 "  `/engage log 7` \u2014 show last N days"
             )
         )
+
+
+@app.command("/test-welcome")
+def handle_test_welcome(ack, body, client, logger):
+    """Send yourself a test welcome DM (admin only)."""
+    ack()
+    user_id = body["user_id"]
+    channel_id = body.get("channel_id", user_id)
+
+    if not _is_onboard_authorized(user_id):
+        client.chat_postEphemeral(
+            channel=channel_id, user=user_id,
+            text=":no_entry: You don't have permission to use this command."
+        )
+        return
+
+    member = db.get_member_by_slack_user(user_id)
+    first_name = (member.get("first_name") or "") if member else ""
+    committees = [c.strip() for c in (member.get("committees") or "").split(",") if c.strip()] if member else []
+    membership_choice = (member.get("membership_choice") or "active") if member else "active"
+
+    all_mappings = db.get_all_committee_channels()
+    committees_with_channels = []
+    for c in committees:
+        mapping = _find_channel_for_committee(c, all_mappings)
+        committees_with_channels.append({
+            "name": c,
+            "channel_id": mapping["channel_id"] if mapping else None
+        })
+
+    upcoming = db.get_all_upcoming_events(limit=2)
+    dm_blocks = blocks.build_welcome_dm_blocks(
+        first_name=first_name,
+        committees_with_channels=committees_with_channels,
+        membership_choice=membership_choice,
+        upcoming_events=upcoming,
+        general_channel_id=GENERAL_CHANNEL_ID
+    )
+    client.chat_postMessage(
+        channel=user_id,
+        blocks=dm_blocks,
+        text="Test welcome DM"
+    )
+    client.chat_postEphemeral(
+        channel=channel_id, user=user_id,
+        text=":white_check_mark: Test welcome DM sent to your DMs."
+    )
+
 
 
 # ============================================================================
