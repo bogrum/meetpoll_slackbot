@@ -1,6 +1,6 @@
 # MeetPoll - Slack Meeting Poll Bot
 
-A self-hosted Slack bot for meeting scheduling polls, event management with RSVPs, and automated new member onboarding. Uses Socket Mode (no public URL required) and SQLite for storage. Perfect for Raspberry Pi deployment.
+A self-hosted Slack bot for meeting scheduling polls, event management with RSVPs, automated new member onboarding, and member re-engagement. Uses Socket Mode (no public URL required) and SQLite for storage. Perfect for Raspberry Pi deployment.
 
 ## Features
 
@@ -24,10 +24,28 @@ A self-hosted Slack bot for meeting scheduling polls, event management with RSVP
 - Periodically checks a Google Sheet registration form for new entries
 - Sends bilingual (Turkish/English) welcome emails with Slack invite link
 - On `team_join`, auto-adds members to their selected committee channels
-- Sends welcome DM with committee info
+- Sends bilingual welcome DM with committee info, upcoming events, and community channels guide
 - When a new member joins a committee channel, sends a DM to that committee's leader (Turkish, with vowel harmony)
 - `/onboard` command for managing the system (status, mappings, leaders, manual runs)
 - First-run safety: `/onboard seed` to import existing members without emailing them
+
+### Google Calendar Sync
+- Syncs upcoming events from a Google Calendar into the local database every 6 hours
+- Welcome DMs and nudge messages automatically reference the next upcoming event
+- Enable by setting `GOOGLE_CALENDAR_ID` in `.env` and enabling the Google Calendar API in your Cloud project
+
+### Member Re-engagement
+- Scores inactive Slack members by education level, membership type, committee interest, and recency
+- `/engage review` — sends 5 ranked nudge candidates to admin DM as review cards
+- Each card shows member profile, draft bilingual message (Turkish first, then English), and four actions:
+  - **Send** — DMs the member immediately (with confirm dialog)
+  - **Edit & Send** — opens a modal to edit the message before sending
+  - **Skip 30d** — puts member on a 30-day cooldown
+  - **Dismiss** — permanently removes member from nudge suggestions
+- `/engage dm @user` — manually target any specific member by @mention or name
+- Nudge messages are bilingual, informal "sen" tone, reference committee leaders by @mention, and include dynamic admin contact lines pulled from the DB
+- Scheduler sends a review batch to the admin automatically (configurable interval)
+- Full audit trail: every sent nudge is logged in the message log
 
 ### Outreach Emails
 - `/outreach academics` — compose personalized emails to academic contacts from a Google Sheet
@@ -124,6 +142,10 @@ Socket Mode allows your bot to connect without a public URL.
 | `/onboard` | Manage member onboarding | `status`, `list`, `map`, `unmap`, `run`, `seed` |
 | `/outreach` | Send personalized outreach emails | `academics`, `clubs`, `status`, `history` |
 | `/queue` | Manage the pending opportunities queue | (no args) or `scan` |
+| `/engage` | Member engagement tools | `stats`, `inactive`, `review`, `dm @user`, `digest`, `log` |
+| `/botstatus` | Show bot and scheduler status | (no args) |
+| `/help` | Show all available commands | (no args) |
+| `/test-welcome` | Send yourself a test welcome DM | (admin only) |
 
 ### Step 5: Enable Interactivity
 
@@ -337,6 +359,9 @@ ONBOARD_AFTER_DATE=
 | `JOBS_CHANNEL_ID` | Slack channel ID where bioinformatics RSS opportunities are posted (e.g. `CQ14TLAGK`) |
 | `ADZUNA_APP_ID` | (Optional) Adzuna API app ID — free tier at [developer.adzuna.com](https://developer.adzuna.com) |
 | `ADZUNA_APP_KEY` | (Optional) Adzuna API key — enables additional European internship search |
+| `GOOGLE_CALENDAR_ID` | (Optional) Google Calendar ID to sync events from (e.g. `abc123@group.calendar.google.com`). Enable Calendar API in your Cloud project first. |
+| `GENERAL_CHANNEL_ID` | Slack channel ID for the #general channel (used for weekly digest posts) |
+| `ENGAGEMENT_ENABLED` | Set to `true` to enable the re-engagement nudge scheduler (default: `true`) |
 
 ### Raspberry Pi Deployment
 
@@ -390,7 +415,7 @@ sudo journalctl -u slackbot -f
 
 From your local machine:
 ```bash
-scp bot.py database.py blocks.py sheets.py mailer.py google_groups.py rss_feed.py requirements.txt pi@raspberrypi.local:~/meetpoll/
+scp bot.py database.py blocks.py sheets.py mailer.py google_groups.py rss_feed.py job_fetcher.py engagement.py requirements.txt pi@raspberrypi.local:~/meetpoll/
 ```
 
 Then on the Pi (use the restart-bot script to avoid duplicate processes):
@@ -556,6 +581,24 @@ RSVP buttons appear on the event message: **Going**, **Maybe**, **Not Going**. I
 
 Share each sheet with the service account email as Viewer. Sheets must be native Google Sheets (not uploaded `.xlsx` files).
 
+### Engagement
+
+| Command | Description |
+|---|---|
+| `/engage stats` | Show active / semi-active / inactive breakdown across all Slack members |
+| `/engage inactive` | List all members inactive for 30+ days (including never-interacted) |
+| `/engage review` | Send a batch of 5 nudge candidates to your DM for review |
+| `/engage dm @user` | Manually target a specific member — sends a review card to your DM |
+| `/engage digest` | Manually trigger the weekly community digest post |
+| `/engage log` | Show last 30 days of sent DMs and nudges |
+| `/engage log 7` | Show last N days |
+
+**Review card actions:**
+- **Send** — DMs the draft message to the member immediately
+- **Edit & Send** — opens a modal to edit the message before sending
+- **Skip 30d** — puts the member on a 30-day cooldown (won't appear in suggestions)
+- **Dismiss** — permanently removes the member from nudge suggestions
+
 ### Opportunity Queue Management
 
 The `/queue` command is restricted to onboard admins.
@@ -577,6 +620,8 @@ Deleting an item permanently suppresses it — it will never be re-queued by fut
 | Poll closer | Every 1 minute | Auto-closes polls past their deadline |
 | RSS queue refresh | 10:00 and 22:00 daily | Fetches bioinformatics opportunity feeds, queues new items |
 | RSS opportunity post | Random, 10:00–22:00 | Posts one queued item at a time, max 5 per day |
+| Google Calendar sync | Every 6 hours + startup | Syncs upcoming events from Google Calendar into local DB |
+| Engagement nudge review | Weekly (Monday 10:00) | Sends a batch of 5 nudge candidates to admin DM for review |
 
 ---
 
@@ -587,7 +632,8 @@ meetpoll/
 ├── bot.py                # Main bot application (commands, handlers, scheduler)
 ├── database.py           # SQLite database operations
 ├── blocks.py             # Slack Block Kit UI builders
-├── sheets.py             # Google Sheets API client
+├── sheets.py             # Google Sheets API client + Google Calendar sync
+├── engagement.py         # Member scoring, candidate selection, nudge message drafting
 ├── mailer.py             # Gmail SMTP email sender
 ├── google_groups.py      # Google Groups auto-add via Admin SDK DWD
 ├── rss_feed.py           # RSS feed fetcher and bioinformatics keyword filter
