@@ -24,6 +24,7 @@ import mailer
 import google_groups
 import rss_feed
 import job_fetcher
+import engagement
 
 # Load environment variables
 load_dotenv()
@@ -2252,7 +2253,8 @@ def handle_analytics_command(ack, body, client, logger):
 def handle_engage_command(ack, body, client, logger):
     """Engagement management (admin only)."""
     ack()
-    text = (body.get("text") or "").strip().lower()
+    text = (body.get("text") or "").strip()
+    text_lower = text.lower()
     user_id = body["user_id"]
     channel_id = body.get("channel_id", user_id)
 
@@ -2263,7 +2265,7 @@ def handle_engage_command(ack, body, client, logger):
         )
         return
 
-    if text == "stats":
+    if text_lower == "stats":
         stats = db.get_user_engagement_stats()
         stats_blocks = blocks.build_engagement_stats_blocks(stats)
         client.chat_postEphemeral(
@@ -2271,7 +2273,7 @@ def handle_engage_command(ack, body, client, logger):
             blocks=stats_blocks, text="Engagement stats"
         )
 
-    elif text == "inactive":
+    elif text_lower == "inactive":
         inactive = db.get_inactive_users(days=30)
         inactive_blocks = blocks.build_inactive_users_blocks(inactive)
         client.chat_postEphemeral(
@@ -2279,26 +2281,34 @@ def handle_engage_command(ack, body, client, logger):
             blocks=inactive_blocks, text="Inactive users"
         )
 
-    elif text == "nudge":
+    elif text_lower == "review":
         client.chat_postEphemeral(
             channel=channel_id, user=user_id,
-            text=":hourglass_flowing_sand: Sending re-engagement nudges..."
+            text=":hourglass_flowing_sand: Building nudge review batch..."
         )
-        count = _send_engagement_nudges()
-        client.chat_postEphemeral(
-            channel=channel_id, user=user_id,
-            text=f":white_check_mark: Sent {count} nudge(s)."
-        )
+        threading.Thread(
+            target=_send_review_batch,
+            args=(user_id, client, logger),
+            daemon=True
+        ).start()
 
-    elif text == "digest":
+    elif text_lower.startswith("dm "):
+        rest = text[3:].strip()
+        threading.Thread(
+            target=_send_dm_preview,
+            args=(rest, user_id, channel_id, client, logger),
+            daemon=True
+        ).start()
+
+    elif text_lower == "digest":
         _post_weekly_digest()
         client.chat_postEphemeral(
             channel=channel_id, user=user_id,
             text=":white_check_mark: Weekly digest posted."
         )
 
-    elif text.startswith("log"):
-        parts = text.split(None, 1)
+    elif text_lower.startswith("log"):
+        parts = text_lower.split(None, 1)
         days = 30
         if len(parts) > 1:
             try:
@@ -2329,12 +2339,200 @@ def handle_engage_command(ack, body, client, logger):
                 "Usage:\n"
                 "  `/engage stats` \u2014 engagement breakdown\n"
                 "  `/engage inactive` \u2014 list inactive members\n"
-                "  `/engage nudge` \u2014 send re-engagement nudges\n"
+                "  `/engage review` \u2014 review top nudge candidates\n"
+                "  `/engage dm @user` \u2014 send a nudge preview to a specific member\n"
                 "  `/engage digest` \u2014 trigger weekly digest\n"
                 "  `/engage log` \u2014 show last 30 days of sent messages\n"
                 "  `/engage log 7` \u2014 show last N days"
             )
         )
+
+
+def _send_review_batch(admin_id: str, client, logger):
+    """Build nudge candidates and send review cards to admin DM."""
+    try:
+        candidates = engagement.build_candidates(limit=5)
+        upcoming = db.get_all_upcoming_events()
+        if not candidates:
+            client.chat_postMessage(
+                channel=admin_id,
+                text=":tada: No nudge candidates right now — everyone is active or on cooldown."
+            )
+            return
+        client.chat_postMessage(
+            channel=admin_id,
+            text=f":mag: *Nudge Review — {len(candidates)} candidate(s)*\nReview each card below and choose an action."
+        )
+        for i, member in enumerate(candidates, 1):
+            msg = engagement.draft_nudge_message(member, upcoming)
+            score = member.get("_score", 0.0)
+            card_blocks = blocks.build_review_card(member, score, msg, i)
+            client.chat_postMessage(
+                channel=admin_id,
+                blocks=card_blocks,
+                text=f"Nudge candidate #{i}"
+            )
+    except Exception as e:
+        logger.error(f"Error building review batch: {e}")
+
+
+def _send_dm_preview(target_text: str, admin_id: str, channel_id: str, client, logger):
+    """Resolve target user and send a nudge review card to admin."""
+    try:
+        target_id = None
+        # Try @mention
+        m = re.search(r"<@([A-Z0-9]+)(?:\|[^>]*)?>", target_text, re.IGNORECASE)
+        if m:
+            target_id = m.group(1).upper()
+
+        # Resolve member record
+        member = None
+        if target_id:
+            member = db.get_member_by_slack_user(target_id)
+
+        if not member:
+            # Try name search
+            name_query = re.sub(r"<@[^>]+>", "", target_text).strip()
+            if name_query:
+                member = db.find_member_by_name(name_query)
+                if member and not target_id:
+                    target_id = member.get("slack_user_id")
+
+        if not target_id and not member:
+            client.chat_postEphemeral(
+                channel=channel_id, user=admin_id,
+                text=":warning: Could not find that member. Try `/engage dm @mention` or a name."
+            )
+            return
+
+        # If still no target_id, try Slack lookup
+        if not target_id:
+            client.chat_postEphemeral(
+                channel=channel_id, user=admin_id,
+                text=":warning: Found member in DB but no Slack ID linked."
+            )
+            return
+
+        # Fill in member data from Slack profile if needed
+        if not member:
+            try:
+                user_info = client.users_info(user=target_id)
+                real_name = user_info["user"]["profile"].get("real_name", "")
+                if real_name:
+                    member = db.find_member_by_name(real_name)
+                    if member and not member.get("slack_user_id"):
+                        db.set_member_slack_user(member["email"], target_id)
+            except Exception:
+                pass
+
+        if not member:
+            member = {}
+        member["user_id"] = target_id
+
+        full_name = member.get("full_name") or (
+            f"{member.get('first_name', '')} {member.get('last_name', '')}".strip()
+        ) or f"<@{target_id}>"
+
+        upcoming = db.get_all_upcoming_events()
+        msg = engagement.draft_nudge_message(member, upcoming)
+        score = engagement.compute_score(member, check_cooldown=False)
+        card_blocks = blocks.build_review_card(member, round(score, 2), msg, 1)
+
+        client.chat_postMessage(
+            channel=admin_id,
+            text=f":pencil: Nudge preview for *{full_name}*",
+            blocks=card_blocks
+        )
+    except Exception as e:
+        logger.error(f"Error in _send_dm_preview: {e}")
+        client.chat_postEphemeral(
+            channel=channel_id, user=admin_id,
+            text=f":x: Error building preview: {e}"
+        )
+
+
+@app.action(re.compile(r"nudge_(send|skip|dismiss|edit)_.+"))
+def handle_nudge_action(ack, body, action, client, logger, respond):
+    """Handle Send / Edit & Send / Skip / Dismiss buttons on nudge review cards."""
+    action_id = action["action_id"]
+    parts = action_id.split("_", 3)  # nudge, <type>, <user_id>
+    action_type = parts[1]
+    target_user_id = "_".join(parts[2:])
+
+    if action_type == "edit":
+        # Must ack and open modal immediately before trigger_id expires
+        ack()
+        message_text = action.get("value", "")
+        member = db.get_member_by_slack_user(target_user_id) or {}
+        full_name = member.get("full_name") or (
+            f"{member.get('first_name', '')} {member.get('last_name', '')}".strip()
+        ) or f"<@{target_user_id}>"
+        modal = blocks.build_nudge_edit_modal(target_user_id, full_name, message_text)
+        client.views_open(trigger_id=body["trigger_id"], view=modal)
+        return
+
+    ack()
+
+    member = db.get_member_by_slack_user(target_user_id) or {}
+    full_name = member.get("full_name") or (
+        f"{member.get('first_name', '')} {member.get('last_name', '')}".strip()
+    ) or f"<@{target_user_id}>"
+
+    if action_type == "send":
+        message_text = action.get("value", "")
+        try:
+            client.chat_postMessage(channel=target_user_id, text=message_text)
+            db.record_nudge_sent(target_user_id, "reengagement")
+            db.log_message(target_user_id, "nudge", message_text[:500])
+            respond(
+                replace_original=True,
+                blocks=blocks.build_review_card_sent(full_name),
+                text=f"Nudge sent to {full_name}."
+            )
+        except Exception as e:
+            logger.error(f"Failed to send nudge to {target_user_id}: {e}")
+
+    elif action_type == "skip":
+        db.record_nudge_sent(target_user_id, "reengagement")
+        respond(
+            replace_original=True,
+            blocks=blocks.build_review_card_skipped(full_name, 30),
+            text=f"Skipped {full_name} for 30 days."
+        )
+
+    elif action_type == "dismiss":
+        db.mark_nudge_dismissed(target_user_id)
+        respond(
+            replace_original=True,
+            blocks=blocks.build_review_card_dismissed(full_name),
+            text=f"Dismissed {full_name} permanently."
+        )
+
+
+@app.view(re.compile(r"nudge_edit_submit_.+"))
+def handle_nudge_edit_submit(ack, body, client, logger):
+    """Handle modal submission for edited nudge messages."""
+    ack()
+    target_user_id = body["view"]["private_metadata"]
+    values = body["view"]["state"]["values"]
+    message_text = values["nudge_message_block"]["nudge_message_input"]["value"]
+
+    member = db.get_member_by_slack_user(target_user_id) or {}
+    full_name = member.get("full_name") or (
+        f"{member.get('first_name', '')} {member.get('last_name', '')}".strip()
+    ) or f"<@{target_user_id}>"
+
+    try:
+        client.chat_postMessage(channel=target_user_id, text=message_text)
+        db.record_nudge_sent(target_user_id, "reengagement")
+        db.log_message(target_user_id, "nudge", message_text[:500])
+        admin_id = body["user"]["id"]
+        client.chat_postMessage(
+            channel=admin_id,
+            text=f":white_check_mark: Edited nudge sent to *{full_name}*."
+        )
+    except Exception as e:
+        logger.error(f"Failed to send edited nudge to {target_user_id}: {e}")
 
 
 @app.command("/test-welcome")
@@ -2407,44 +2605,14 @@ def _post_weekly_digest():
         logger.error(f"Error posting weekly digest: {e}")
 
 
-def _send_engagement_nudges() -> int:
-    """Send re-engagement DMs to inactive users. Returns count sent."""
-    count = 0
-    try:
-        inactive = db.get_inactive_users(days=30)
-        digest_data = db.get_weekly_digest_data()
-
-        for user in inactive[:5]:  # Max 5 nudges per run
-            user_id = user["user_id"]
-
-            if db.was_nudge_sent_recently(user_id, "reengagement", days=14):
-                continue
-
-            # Try to get user's first name
-            first_name = ""
-            try:
-                user_info = app.client.users_info(user=user_id)
-                first_name = user_info["user"]["profile"].get("first_name", "")
-            except Exception:
-                pass
-
-            nudge_blocks = blocks.build_nudge_dm_blocks(first_name, digest_data)
-            try:
-                app.client.chat_postMessage(
-                    channel=user_id,
-                    blocks=nudge_blocks,
-                    text="We miss you in the community!"
-                )
-                db.record_nudge_sent(user_id, "reengagement")
-                db.log_message(user_id, "nudge", "We miss you in the community!")
-                count += 1
-                logger.info(f"Sent re-engagement nudge to {user_id}")
-            except Exception as e:
-                logger.warning(f"Could not send nudge to {user_id}: {e}")
-
-    except Exception as e:
-        logger.error(f"Error sending engagement nudges: {e}")
-    return count
+def _send_engagement_nudges():
+    """Send nudge review batch to admin for human approval."""
+    admin_ids = db.get_all_onboard_admins()
+    if not admin_ids:
+        logger.warning("No admin found for nudge review batch")
+        return
+    admin_id = admin_ids[0]
+    _send_review_batch(admin_id, app.client, logger)
 
 
 def _check_milestones():

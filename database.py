@@ -1590,6 +1590,38 @@ def was_nudge_sent_recently(user_id: str, nudge_type: str, days: int = 14) -> bo
         return cursor.fetchone() is not None
 
 
+def is_nudge_dismissed(user_id: str) -> bool:
+    """Check if a user has been permanently dismissed from nudging."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 1 FROM engagement_nudges
+            WHERE user_id = ? AND nudge_type = 'dismissed'
+        """, (user_id,))
+        return cursor.fetchone() is not None
+
+
+def mark_nudge_dismissed(user_id: str):
+    """Permanently dismiss a user from the nudge system."""
+    record_nudge_sent(user_id, "dismissed")
+
+
+def find_member_by_name(query: str) -> Optional[dict]:
+    """Find a processed member by partial first/last name match. Prefers linked Slack users."""
+    query = query.strip()
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM processed_members
+            WHERE first_name LIKE ? OR last_name LIKE ?
+               OR (first_name || ' ' || last_name) LIKE ?
+            ORDER BY (slack_user_id IS NOT NULL) DESC
+            LIMIT 1
+        """, (f"%{query}%", f"%{query}%", f"%{query}%"))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
 def get_next_milestone() -> Optional[int]:
     """Check if member count crossed a milestone (50, 100, 150, ...).
     Returns the milestone value if uncelebrated, None otherwise."""

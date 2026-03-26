@@ -481,20 +481,13 @@ def build_welcome_dm_blocks(first_name: str,
         "text": {
             "type": "mrkdwn",
             "text": (
-                ":compass: *Topluluk Kanalları / Community Channels:*
-"
-                f"• {general_ref} — Duyurular / Announcements
-"
-                "• #chit_chat-geyik — Sohbet, gündelik konuşmalar / Casual chat
-"
-                "• #jobs_internship — İş & staj ilanları, paylaşabilirsin de / Jobs & internships, feel free to share
-"
-                "• #networking — Bağlantı kur, tanış / Connect with others
-"
-                "• #scientific_events — Bilimsel etkinlikler / Scientific events
-"
-                "• #help_discussion — Akademik destek & sorular / Academic help & questions
-"
+                ":compass: *Topluluk Kanalları / Community Channels:*\n"
+                f"• {general_ref} — Duyurular / Announcements\n"
+                "• #chit_chat-geyik — Sohbet, gündelik konuşmalar / Casual chat\n"
+                "• #jobs_internship — İş & staj ilanları, paylaşabilirsin de / Jobs & internships, feel free to share\n"
+                "• #networking — Bağlantı kur, tanış / Connect with others\n"
+                "• #scientific_events — Bilimsel etkinlikler / Scientific events\n"
+                "• #help_discussion — Akademik destek & sorular / Academic help & questions\n"
                 "• #articles__resources — Makale & kaynak paylaşımı / Articles & resources"
             )
         }
@@ -506,8 +499,7 @@ def build_welcome_dm_blocks(first_name: str,
         "elements": [{
             "type": "mrkdwn",
             "text": (
-                "Herhangi bir sorun olursa bu DM üzerinden bize ulaşabilirsin. :slightly_smiling_face:
-"
+                "Herhangi bir sorun olursa bu DM üzerinden bize ulaşabilirsin. :slightly_smiling_face:\n"
                 "Feel free to reach out here anytime. — *RSG-Türkiye*"
             )
         }]
@@ -1385,6 +1377,141 @@ def build_inactive_users_blocks(users: list[dict]) -> list[dict]:
         })
 
     return result
+
+
+def build_review_card(member: dict, score: float, message_text: str, index: int) -> list[dict]:
+    """Build an admin review card for a nudge candidate."""
+    user_id = member.get("user_id") or member.get("slack_user_id", "")
+    full_name = member.get("full_name") or (
+        f"{member.get('first_name', '')} {member.get('last_name', '')}".strip()
+    ) or f"<@{user_id}>"
+    education = member.get("education_level") or member.get("education") or "—"
+    membership = member.get("membership_choice") or "—"
+    committees = member.get("committees") or "—"
+    preview = message_text[:300] + ("…" if len(message_text) > 300 else "")
+
+    mention = f"<@{user_id}>" if user_id else full_name
+
+    return [
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*#{index} — {full_name}* ({mention})\n"
+                    f"Score: `{score}` | Education: _{education}_ | Membership: _{membership}_\n"
+                    f"Committees: _{committees}_"
+                )
+            }
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"```{preview}```"}
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Send", "emoji": True},
+                    "style": "primary",
+                    "action_id": f"nudge_send_{user_id}",
+                    "value": message_text,
+                    "confirm": {
+                        "title": {"type": "plain_text", "text": "Send this nudge?"},
+                        "text": {"type": "mrkdwn", "text": f"This will DM *{full_name}* the draft message."},
+                        "confirm": {"type": "plain_text", "text": "Send"},
+                        "deny": {"type": "plain_text", "text": "Cancel"},
+                    }
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Edit & Send", "emoji": True},
+                    "action_id": f"nudge_edit_{user_id}",
+                    "value": message_text,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Skip 30d", "emoji": True},
+                    "action_id": f"nudge_skip_{user_id}",
+                    "value": user_id,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Dismiss", "emoji": True},
+                    "style": "danger",
+                    "action_id": f"nudge_dismiss_{user_id}",
+                    "value": user_id,
+                    "confirm": {
+                        "title": {"type": "plain_text", "text": "Dismiss permanently?"},
+                        "text": {"type": "mrkdwn", "text": f"*{full_name}* will never be suggested again."},
+                        "confirm": {"type": "plain_text", "text": "Dismiss"},
+                        "deny": {"type": "plain_text", "text": "Cancel"},
+                    }
+                },
+            ]
+        }
+    ]
+
+
+def build_review_card_sent(full_name: str) -> list[dict]:
+    return [
+        {"type": "divider"},
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f":white_check_mark: Nudge sent to *{full_name}*."}]
+        }
+    ]
+
+
+def build_review_card_skipped(full_name: str, days: int = 30) -> list[dict]:
+    return [
+        {"type": "divider"},
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f":next_track_button: Skipped *{full_name}* for {days} days."}]
+        }
+    ]
+
+
+def build_review_card_dismissed(full_name: str) -> list[dict]:
+    return [
+        {"type": "divider"},
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f":wastebasket: Dismissed *{full_name}* permanently."}]
+        }
+    ]
+
+
+def build_nudge_edit_modal(user_id: str, full_name: str, message_text: str) -> dict:
+    """Modal for editing a nudge message before sending."""
+    return {
+        "type": "modal",
+        "callback_id": f"nudge_edit_submit_{user_id}",
+        "private_metadata": user_id,
+        "title": {"type": "plain_text", "text": "Edit Nudge Message"},
+        "submit": {"type": "plain_text", "text": "Send"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"Editing message for *{full_name}*"}
+            },
+            {
+                "type": "input",
+                "block_id": "nudge_message_block",
+                "label": {"type": "plain_text", "text": "Message"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "nudge_message_input",
+                    "multiline": True,
+                    "initial_value": message_text,
+                }
+            }
+        ]
+    }
 
 
 def build_weekly_digest_blocks(data: dict) -> list[dict]:
