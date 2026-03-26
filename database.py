@@ -1486,15 +1486,31 @@ def record_user_activity(user_id: str, activity_type: str):
 
 
 def get_inactive_users(days: int = 30) -> list[dict]:
-    """Get users who haven't been active in N days."""
+    """Get Slack members who haven't been active in N days (or have no activity at all)."""
     with get_db() as conn:
         cursor = conn.cursor()
+        # Members with stale activity
         cursor.execute("""
-            SELECT * FROM user_activity
-            WHERE last_seen < datetime('now', ? || ' days')
-            ORDER BY last_seen ASC
+            SELECT ua.user_id, ua.last_seen, ua.total_votes, ua.total_rsvps,
+                   pm.first_name, pm.last_name, pm.email
+            FROM user_activity ua
+            LEFT JOIN processed_members pm ON pm.slack_user_id = ua.user_id
+            WHERE ua.last_seen < datetime('now', ? || ' days')
+            ORDER BY ua.last_seen ASC
         """, (f"-{days}",))
-        return [dict(row) for row in cursor.fetchall()]
+        stale = [dict(row) for row in cursor.fetchall()]
+
+        # Members on Slack who have never interacted with the bot
+        cursor.execute("""
+            SELECT pm.slack_user_id as user_id, NULL as last_seen, 0 as total_votes, 0 as total_rsvps,
+                   pm.first_name, pm.last_name, pm.email
+            FROM processed_members pm
+            WHERE pm.slack_user_id IS NOT NULL
+            AND pm.slack_user_id NOT IN (SELECT user_id FROM user_activity)
+        """)
+        never_active = [dict(row) for row in cursor.fetchall()]
+
+        return stale + never_active
 
 
 def get_user_engagement_stats() -> dict:
@@ -1527,7 +1543,7 @@ def get_user_engagement_stats() -> dict:
         """)
         inactive = cursor.fetchone()["cnt"]
 
-        # Never tracked (registered but no activity)
+        # Never interacted (on Slack but no activity rows)
         cursor.execute("""
             SELECT COUNT(*) as cnt FROM processed_members
             WHERE slack_user_id IS NOT NULL
@@ -1535,11 +1551,19 @@ def get_user_engagement_stats() -> dict:
         """)
         never_tracked = cursor.fetchone()["cnt"]
 
+        # Total Slack members
+        cursor.execute("""
+            SELECT COUNT(*) as cnt FROM processed_members
+            WHERE slack_user_id IS NOT NULL
+        """)
+        total_slack = cursor.fetchone()["cnt"]
+
         return {
             "total_tracked": total,
+            "total_slack": total_slack,
             "active_7d": active,
             "semi_active_30d": semi_active,
-            "inactive_30d": inactive,
+            "inactive_30d": inactive + never_tracked,
             "never_tracked": never_tracked,
         }
 

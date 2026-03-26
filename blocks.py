@@ -1320,6 +1320,7 @@ def build_analytics_blocks(poll_stats: dict, event_stats: dict,
 def build_engagement_stats_blocks(stats: dict) -> list[dict]:
     """Build engagement statistics for admin view."""
     total = stats.get("total_tracked", 0)
+    total_slack = stats.get("total_slack", 0)
     active = stats.get("active_7d", 0)
     semi = stats.get("semi_active_30d", 0)
     inactive = stats.get("inactive_30d", 0)
@@ -1336,14 +1337,13 @@ def build_engagement_stats_blocks(stats: dict) -> list[dict]:
             "fields": [
                 {"type": "mrkdwn", "text": f"*:green_circle: Active (7d):*\n{active}"},
                 {"type": "mrkdwn", "text": f"*:yellow_circle: Semi-active (7-30d):*\n{semi}"},
-                {"type": "mrkdwn", "text": f"*:red_circle: Inactive (30d+):*\n{inactive}"},
-                {"type": "mrkdwn", "text": f"*:white_circle: Never tracked:*\n{never}"},
+                {"type": "mrkdwn", "text": f"*:red_circle: Inactive / Never engaged:*\n{inactive}"},
             ]
         },
         {
             "type": "context",
             "elements": [
-                {"type": "mrkdwn", "text": f"Total tracked users: {total}"}
+                {"type": "mrkdwn", "text": f"Total Slack members: {total_slack} — {never} have never interacted with the bot"}
             ]
         }
     ]
@@ -1367,8 +1367,11 @@ def build_inactive_users_blocks(users: list[dict]) -> list[dict]:
 
     lines = []
     for u in users[:20]:  # Cap at 20 to stay under Slack limits
-        last_seen = u.get("last_seen", "unknown")[:10]
-        lines.append(f"• <@{u['user_id']}> — last seen: _{last_seen}_")
+        raw_last_seen = u.get("last_seen")
+        last_seen = raw_last_seen[:10] if raw_last_seen else "never"
+        first_name = u.get("first_name") or ""
+        display = f"{first_name} (<@{u['user_id']}>)" if first_name else f"<@{u['user_id']}>"
+        lines.append(f"• {display} — last seen: _{last_seen}_")
 
     result.append({
         "type": "section",
