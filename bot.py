@@ -25,6 +25,7 @@ import google_groups
 import rss_feed
 import job_fetcher
 import engagement
+import sheet_monitor
 
 # Load environment variables
 load_dotenv()
@@ -47,6 +48,7 @@ SLACK_INVITE_LINK = os.getenv("SLACK_INVITE_LINK", "")
 WELCOME_METHOD = os.getenv("WELCOME_METHOD", "email")
 ONBOARD_AFTER_DATE = os.getenv("ONBOARD_AFTER_DATE", "")
 ONBOARD_SUPER_ADMIN = os.getenv("ONBOARD_SUPER_ADMIN", "")
+COMMITTEE_SHEET_ID = os.getenv("COMMITTEE_SHEET_ID", "")
 
 # Google Groups config
 GOOGLE_GROUP_EMAIL = os.getenv("GOOGLE_GROUP_EMAIL", "")
@@ -2698,6 +2700,34 @@ def main():
         scheduler.add_job(_send_engagement_nudges, "cron", day_of_week="wed", hour=14, minute=0, id="engagement_nudges")
         scheduler.add_job(_check_milestones, "cron", hour="*/6", id="milestone_check")
         logger.info("Engagement system enabled (digest, nudges, milestones, backup)")
+
+
+def _check_sheet_new_rows():
+    sheet_monitor.check_for_new_rows(app.client)
+
+def _check_sheet_deadlines():
+    sheet_monitor.check_deadline_alerts(app.client)
+
+def _check_sheet_missed_deadlines():
+    sheet_monitor.check_missed_deadlines(app.client)
+
+def _check_sheet_empty_tabs():
+    sheet_monitor.check_empty_tabs(app.client)
+
+def _sheet_weekly_prompt():
+    sheet_monitor.send_weekly_prompt(app.client)
+
+def _sheet_friday_digest():
+    sheet_monitor.send_friday_digest(app.client)
+
+    if COMMITTEE_SHEET_ID:
+        scheduler.add_job(_check_sheet_new_rows,         "interval", hours=4,                              id="sheet_new_rows")
+        scheduler.add_job(_check_sheet_deadlines,        "interval", hours=4,                              id="sheet_deadlines")
+        scheduler.add_job(_check_sheet_missed_deadlines, "cron",     hour=9,                               id="sheet_missed")
+        scheduler.add_job(_check_sheet_empty_tabs,       "interval", hours=4,                              id="sheet_empty")
+        scheduler.add_job(_sheet_weekly_prompt,          "cron",     day_of_week="mon", hour=9, minute=0, id="sheet_prompt")
+        scheduler.add_job(_sheet_friday_digest,          "cron",     day_of_week="fri", hour=16, minute=0,id="sheet_digest")
+        logger.info("Sheet monitor enabled")
 
     scheduler.start()
     logger.info("Scheduler started")
