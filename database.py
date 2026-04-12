@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 DATABASE_PATH = os.getenv("DATABASE_PATH", "./meetpoll.db")
 
 # Schema version — increment when adding migrations
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 
 
 def get_connection() -> sqlite3.Connection:
@@ -127,6 +127,58 @@ def _run_migrations(conn):
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_message_log_recipient ON message_log(recipient_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_message_log_sent_at ON message_log(sent_at)")
         logger.info("Applied migration 4: message_log table")
+
+    # Migration 5: google_event_id column for calendar sync
+    if current < 5:
+        try:
+            cursor.execute("ALTER TABLE events ADD COLUMN google_event_id TEXT")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_google_id ON events(google_event_id)")
+        except sqlite3.OperationalError:
+            pass
+        logger.info("Applied migration 5: google_event_id column")
+
+
+    # Migration 6: sheet monitoring tables
+    if current < 6:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sheet_rows (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                tab_name        TEXT NOT NULL,
+                row_hash        TEXT NOT NULL,
+                etkinlik_adi    TEXT,
+                tarih           TEXT,
+                deadline        TEXT,
+                tamamlandi      TEXT DEFAULT '',
+                first_seen_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tab_name, row_hash)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sheet_notifications (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                tab_name            TEXT NOT NULL,
+                notification_type   TEXT NOT NULL,
+                row_hash            TEXT,
+                sent_at             TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sheet_tab_state (
+                tab_name            TEXT PRIMARY KEY,
+                last_updated_at     TIMESTAMP,
+                last_checked_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sheet_rows_tab "
+            "ON sheet_rows(tab_name)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sheet_notif_lookup "
+            "ON sheet_notifications(tab_name, notification_type, sent_at)"
+        )
+        logger.info("Applied migration 6: sheet monitoring tables")
 
     # Record final version
     cursor.execute("INSERT OR REPLACE INTO schema_version (version, applied_at) VALUES (?, CURRENT_TIMESTAMP)",
@@ -1010,6 +1062,51 @@ def get_upcoming_events(limit: int = 10) -> list[dict]:
             LIMIT ?
         """, (limit,))
         return [dict(row) for row in cursor.fetchall()]
+
+
+def upsert_calendar_event(ev: dict):
+    """Insert or update an event from Google Calendar."""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        # Try to find existing event by google_event_id
+        cursor.execute("SELECT id FROM events WHERE google_event_id = ?", (ev["gcal_id"],))
+        row = cursor.fetchone()
+
+        if row:
+            # Update existing
+            cursor.execute("""
+                UPDATE events SET
+                    title = ?, description = ?, location = ?,
+                    event_datetime = ?, status = 'open'
+                WHERE google_event_id = ?
+            """, (ev["title"], ev["description"], ev["location"],
+                  ev["start_datetime"], ev["gcal_id"]))
+        else:
+            # Insert new
+            # creator_id and channel_id are required; we use 'system' or similar if unknown
+            cursor.execute("""
+                INSERT INTO events
+                    (title, description, location, event_datetime,
+                     creator_id, channel_id, google_event_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (ev["title"], ev["description"], ev["location"],
+                  ev["start_datetime"], "system", "system", ev["gcal_id"]))
+
+
+def prune_stale_calendar_events():
+    """Close events that were synced from Google but are no longer in the latest sync.
+    Actually, we just close them if they are in the past or were deleted from GCal.
+    For simplicity in this bot, we'll just close open events that have passed.
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE events
+            SET status = 'closed'
+            WHERE status = 'open'
+            AND google_event_id IS NOT NULL
+            AND event_datetime < datetime('now')
+        """)
 
 
 # ============================================================================
