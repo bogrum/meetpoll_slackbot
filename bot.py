@@ -2701,25 +2701,6 @@ def main():
         scheduler.add_job(_check_milestones, "cron", hour="*/6", id="milestone_check")
         logger.info("Engagement system enabled (digest, nudges, milestones, backup)")
 
-
-def _check_sheet_new_rows():
-    sheet_monitor.check_for_new_rows(app.client)
-
-def _check_sheet_deadlines():
-    sheet_monitor.check_deadline_alerts(app.client)
-
-def _check_sheet_missed_deadlines():
-    sheet_monitor.check_missed_deadlines(app.client)
-
-def _check_sheet_empty_tabs():
-    sheet_monitor.check_empty_tabs(app.client)
-
-def _sheet_weekly_prompt():
-    sheet_monitor.send_weekly_prompt(app.client)
-
-def _sheet_friday_digest():
-    sheet_monitor.send_friday_digest(app.client)
-
     if COMMITTEE_SHEET_ID:
         scheduler.add_job(_check_sheet_new_rows,         "interval", hours=4,                              id="sheet_new_rows")
         scheduler.add_job(_check_sheet_deadlines,        "interval", hours=4,                              id="sheet_deadlines")
@@ -2742,6 +2723,25 @@ def _sheet_friday_digest():
     handler = SocketModeHandler(app, app_token)
     logger.info("MeetPoll bot starting in Socket Mode...")
     handler.start()
+
+
+def _check_sheet_new_rows():
+    sheet_monitor.check_for_new_rows(app.client)
+
+def _check_sheet_deadlines():
+    sheet_monitor.check_deadline_alerts(app.client)
+
+def _check_sheet_missed_deadlines():
+    sheet_monitor.check_missed_deadlines(app.client)
+
+def _check_sheet_empty_tabs():
+    sheet_monitor.check_empty_tabs(app.client)
+
+def _sheet_weekly_prompt():
+    sheet_monitor.send_weekly_prompt(app.client)
+
+def _sheet_friday_digest():
+    sheet_monitor.send_friday_digest(app.client)
 
 
 if __name__ == "__main__":
